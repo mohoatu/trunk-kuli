@@ -14,7 +14,7 @@ import argparse
 import json
 import sys
 
-from . import measures, ratchet, review_cost
+from . import measures, ratchet, review_cost, trail
 
 
 def _utf8():
@@ -92,11 +92,74 @@ def cmd_review_cost(args):
     return 0 if ok else 1
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(prog="kuli", description=__doc__)
-    parser.add_argument("--root", default=".", help="repository root")
-    sub = parser.add_subparsers(dest="command", required=True)
+def cmd_record(args):
+    """Append one action to the trail. Must never block the agent.
 
+    This runs as a hook on every tool call, so two rules govern it: it is
+    observe-only, and it swallows its own failures. A recorder that can stop
+    work gets switched off, and then there is no record at all.
+    """
+    try:
+        event = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        return 0
+    try:
+        entry = trail.append(event, args.root)
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print("trail: could not record (%s)" % exc, file=sys.stderr)
+        return 0
+    if args.verbose:
+        print(entry["hash"][:12], entry["tool"], entry.get("target") or "")
+    return 0
+
+
+def _print_counts(title, data):
+    if not data:
+        return
+    print("\n  %s" % title)
+    for name, count in sorted(data.items(), key=lambda kv: -kv[1]):
+        print("    %-28s %d" % (name, count))
+
+
+def _print_recent(records, limit):
+    print("\n  last %d" % limit)
+    for entry in records[-limit:]:
+        print("    %s  %-14s %s" % (entry["ts"], entry["tool"],
+                                    entry.get("target") or ""))
+
+
+def cmd_trail(args):
+    records = trail.entries(args.root, args.since)
+    if args.file:
+        records = trail.touched(records, args.file)
+    if args.json:
+        print(json.dumps(records, indent=2, sort_keys=True))
+        return 0
+
+    summary = trail.summarise(records)
+    print("%d actions recorded" % summary["total"])
+    _print_counts("by tool", summary["by_tool"])
+    _print_counts("by provider", summary["by_actor"])
+    _print_counts("by day", summary["by_day"])
+    if args.last:
+        _print_recent(records, args.last)
+    return 0
+
+
+def cmd_audit(args):
+    ok, problems = trail.verify(args.root)
+    count = len(trail.entries(args.root))
+    if ok:
+        print("%d entries, chain intact." % count)
+        return 0
+    print("The trail has been altered. %d entries, %d problems:"
+          % (count, len(problems)))
+    for problem in problems[:20]:
+        print("  %s" % problem)
+    return 1
+
+
+def _add_gates(sub):
     sub.add_parser("measure").set_defaults(func=cmd_measure)
     sub.add_parser("baseline").set_defaults(func=cmd_baseline)
     sub.add_parser("ratchet").set_defaults(func=cmd_ratchet)
@@ -107,6 +170,29 @@ def build_parser():
                       help="added lines allowed per acceptance criterion")
     cost.set_defaults(func=cmd_review_cost)
 
+
+def _add_trail(sub):
+    record = sub.add_parser("record", help="append one action (hook target)")
+    record.add_argument("--verbose", action="store_true")
+    record.set_defaults(func=cmd_record)
+
+    show = sub.add_parser("trail", help="what the agents did")
+    show.add_argument("--since", help="YYYY-MM-DD")
+    show.add_argument("--file", help="only actions whose target mentions this")
+    show.add_argument("--last", type=int, default=0, help="also list the last N")
+    show.add_argument("--json", action="store_true")
+    show.set_defaults(func=cmd_trail)
+
+    sub.add_parser("audit", help="verify the trail was not altered"
+                   ).set_defaults(func=cmd_audit)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="kuli", description=__doc__)
+    parser.add_argument("--root", default=".", help="repository root")
+    sub = parser.add_subparsers(dest="command", required=True)
+    _add_gates(sub)
+    _add_trail(sub)
     return parser
 
 

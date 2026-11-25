@@ -169,15 +169,24 @@ def _erosion(values):
     return round(sum(worst) / total, 4)
 
 
+def countable(line):
+    """Whether a line is substantial enough that repeating it means something."""
+    stripped = line.strip()
+    if len(stripped) < MIN_DUPLICATE_LINE:
+        return None
+    if stripped.startswith(("#", "//", "*")):
+        return None
+    return stripped
+
+
 def duplication(root, suffixes, extra_skip=()):
     """Share of substantial lines that appear more than once in the tree."""
     seen = {}
     for path in iter_source_files(root, suffixes, extra_skip):
         for line in read(path).splitlines():
-            stripped = line.strip()
-            if len(stripped) < MIN_DUPLICATE_LINE or stripped.startswith(("#", "//", "*")):
-                continue
-            seen[stripped] = seen.get(stripped, 0) + 1
+            stripped = countable(line)
+            if stripped:
+                seen[stripped] = seen.get(stripped, 0) + 1
     if not seen:
         return 0.0
     repeated = sum(count for count in seen.values() if count > 1)

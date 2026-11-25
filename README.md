@@ -217,6 +217,39 @@ When a change claims no criteria the gate **abstains and says so**:
 }
 ```
 
+### 5. See what the agents did
+
+A gate says yes or no at a boundary. A **trail** is a witness — and the two
+fail differently: a gate you never wrote lets something through in silence,
+while a trail catches it anyway, afterwards.
+
+The rule the design rests on: **the record is not written by the agent.** An
+agent logging itself produces a claim; the recorder sits outside it, at the
+tool-call boundary, so the trail holds what happened rather than what the
+agent said happened.
+
+```bash
+python -m kuli.cli trail --last 20          # counts by tool, provider, day
+python -m kuli.cli trail --file src/app.py  # who changed this file
+python -m kuli.cli audit                    # has the record been altered?
+```
+
+Append-only and hash-chained, so an entry cannot be edited or removed
+quietly:
+
+```
+The trail has been altered. 3 entries, 1 problems:
+  entry 0: content does not match its digest
+```
+
+And it stores **fingerprints, not contents** — a write is recorded as its
+path, size and SHA-256. That answers who changed what, when, to exactly which
+bytes, without the audit log becoming the largest leak in the system.
+Credentials are removed before anything is hashed.
+
+It records; it refuses nothing. See [`docs/03-trail.md`](docs/03-trail.md),
+including what it deliberately cannot do.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -270,6 +303,7 @@ disappearing when the model changes.
 | [`CONSTITUTION.md`](CONSTITUTION.md) | The ten rules every project under trunk-kuli works by, whichever model is doing the work |
 | [`docs/01-product-spec.md`](docs/01-product-spec.md) | Problem, thesis, the two halves, the gates, how portability is proven, scope, metrics, risks, open questions |
 | [`docs/02-fleet.md`](docs/02-fleet.md) | Every existing project, which gates it already has, its tier, and its gaps in order of risk |
+| [`docs/03-trail.md`](docs/03-trail.md) | The audit trail: what the agents did, recorded by something that is not them |
 
 ## The first real workload
 
@@ -286,15 +320,18 @@ without it. Nothing else counts as done.
 
 ## Status
 
-**Built and running: the two ratchet gates.** `measure`, `baseline`, `ratchet`
-and `review-cost`, covering Python and JavaScript. 40 checks on Linux and
-Windows across Python 3.10 and 3.13, and the suite makes the ratchet trip on
-purpose rather than only watching it agree — a gate nobody has seen go red is
-not known to work. kuli is measured by its own ratchet in its own CI.
+**Built and running: the two ratchet gates, and the audit trail.** `measure`,
+`baseline`, `ratchet`, `review-cost`, `record`, `trail` and `audit`, covering
+Python and JavaScript. 69 checks on Linux and Windows across Python 3.10 and
+3.13, and the suite makes the ratchet trip and the trail detect tampering on
+purpose rather than only watching them agree — a check nobody has seen go red
+is not known to work. kuli is measured by its own ratchet in its own CI, and
+paid for the trail with a refactor when adding it tripped that ratchet.
 
 **Specified, not yet built:** the classified local brain, the credential
 proxy, provider adapters, the other seven gates, the night/approval-window
-split, cross-provider review, and the conformance suite.
+split, cross-provider review, the conformance suite, and the corridor — rules
+that actually refuse an agent's action rather than only recording it.
 
 Nine open questions are recorded rather than guessed; two of them shape the
 architecture and are answered before more code.
@@ -310,6 +347,11 @@ architecture and are answered before more code.
 - **`review-cost` needs identified acceptance criteria** (`A4.4`, `I2`, `R5`)
   in the diff or commit messages. Without them it abstains.
 - **Java, Go and other languages are not measured at all.**
+- **The trail only sees agents that run through it.** Open a model directly,
+  outside a project with the hook installed, and nothing is recorded.
+- **Recording a command is not constraining it.** The trail writes down
+  `rm -rf`; it does not stop it.
+- **Cost and token figures are not recorded yet.**
 
 ## Where it comes from
 

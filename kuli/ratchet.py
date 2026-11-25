@@ -63,32 +63,36 @@ def exceptions(config, language):
     return config.get("exceptions", {}).get(language, {})
 
 
+def regression(language, name, before, after, config):
+    """The record for one measure, or None if it did not get worse."""
+    if name not in before or name not in after:
+        return None
+    delta = after[name] - before[name]
+    if delta <= allowance(config, language, name) + EPSILON:
+        return None
+    record = {
+        "language": language,
+        "measure": name,
+        "baseline": before[name],
+        "current": after[name],
+        "delta": round(delta, 4),
+    }
+    reason = exceptions(config, language).get(name)
+    if reason:
+        record["reason"] = reason
+    return record
+
+
 def compare(baseline, current, config):
     """Every measure that got worse, with by how much and why it is allowed."""
     trips, excused = [], []
     for language, before in sorted(baseline.items()):
-        after = current.get(language)
-        if after is None:
-            continue
+        after = current.get(language) or {}
         for name in measures.GUARDED:
-            if name not in before or name not in after:
+            record = regression(language, name, before, after, config)
+            if record is None:
                 continue
-            delta = after[name] - before[name]
-            if delta <= allowance(config, language, name) + EPSILON:
-                continue
-            record = {
-                "language": language,
-                "measure": name,
-                "baseline": before[name],
-                "current": after[name],
-                "delta": round(delta, 4),
-            }
-            reason = exceptions(config, language).get(name)
-            if reason:
-                record["reason"] = reason
-                excused.append(record)
-            else:
-                trips.append(record)
+            (excused if "reason" in record else trips).append(record)
     return trips, excused
 
 

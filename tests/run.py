@@ -8,6 +8,7 @@ proves nothing when it passes — so the ratchet is made to trip on purpose
 here, not only to agree.
 """
 
+import json
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from kuli import measures, ratchet, review_cost  # noqa: E402
+from kuli import measures, ratchet, redact, review_cost, trail  # noqa: E402
 
 RESULTS = []
 
@@ -208,6 +209,129 @@ def test_identifier_pattern():
     equal("ordinary words are not", review_cost.IDENTIFIER.findall("A sentence."), [])
 
 
+# --- redaction -------------------------------------------------------------
+
+SECRETS = [
+    "ghp_abcdefghijklmnopqrstuvwxyz012345",
+    "sk-abcdefghijklmnopqrstuvwxyz1234",
+    "Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+    "password = hunter2secret",
+]
+
+
+def test_secrets_never_survive():
+    for secret in SECRETS:
+        cleaned = redact.scrub("prefix %s suffix" % secret)
+        check("a credential is removed: %s" % secret[:12],
+              secret not in cleaned, cleaned)
+    check("ordinary text is left alone",
+          redact.scrub("read the file and return") == "read the file and return")
+
+
+def test_content_is_fingerprinted_not_stored():
+    body = "def f():\n    return 'a very specific line of code'\n"
+    detail = redact.clean({"file_path": "src/a.py", "new_string": body})
+    check("the path is kept", detail["file_path"] == "src/a.py")
+    check("the content is not", body not in json.dumps(detail))
+    check("a digest is kept instead", len(detail["new_string"]["sha256"]) == 64)
+    equal("and the size", detail["new_string"]["bytes"], len(body.encode()))
+
+    same = redact.clean({"new_string": body})["new_string"]["sha256"]
+    equal("the same bytes give the same digest",
+          same, detail["new_string"]["sha256"])
+
+
+def test_long_values_are_shortened():
+    # Deliberately not a run of one character: an unbroken 5,000-character
+    # token looks exactly like an encoded secret, so scrub() removes it before
+    # shorten() ever sees it — which is the right order, and was worth
+    # discovering here rather than in the trail.
+    long = "the quick brown fox jumps over the lazy dog " * 200
+    shortened = redact.shorten(long)
+    check("a long value is cut", len(shortened) < 600)
+    check("and says how much was dropped", "chars]" in shortened)
+
+    blob = "A" * 5000
+    equal("a long unbroken token is treated as a secret, not shortened",
+          redact.shorten(blob), redact.REDACTED)
+
+
+# --- the trail -------------------------------------------------------------
+
+def event(tool="Edit", **kw):
+    payload = {"hook_event_name": "PreToolUse", "session_id": "s-1",
+               "tool_name": tool, "tool_input": kw}
+    return payload
+
+
+def test_trail_appends_and_chains(tmp):
+    first = trail.append(event(file_path="a.py", new_string="x = 1"), tmp)
+    second = trail.append(event(tool="Bash", command="ls"), tmp)
+
+    equal("the first entry starts the chain", first["prev"], trail.GENESIS)
+    equal("the second points at the first", second["prev"], first["hash"])
+    equal("the target is recorded", first["target"], "a.py")
+    equal("so is the tool", second["tool"], "Bash")
+
+    records = trail.entries(tmp)
+    equal("both were written", len(records), 2)
+    ok, problems = trail.verify(tmp)
+    check("and the chain verifies", ok, problems)
+
+
+def test_trail_detects_tampering(tmp):
+    trail.append(event(file_path="a.py"), tmp)
+    trail.append(event(file_path="b.py"), tmp)
+
+    path = next((Path(tmp) / trail.TRAIL_DIR).glob("*.jsonl"))
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    records[0]["target"] = "innocent.py"
+    path.write_text("\n".join(json.dumps(r, sort_keys=True) for r in records) + "\n",
+                    encoding="utf-8")
+
+    ok, problems = trail.verify(tmp)
+    check("a quietly edited entry is caught", ok is False)
+    check("and the entry is named", any("entry 0" in p for p in problems), problems)
+
+
+def test_trail_removal_is_caught(tmp):
+    for name in ("a.py", "b.py", "c.py"):
+        trail.append(event(file_path=name), tmp)
+    path = next((Path(tmp) / trail.TRAIL_DIR).glob("*.jsonl"))
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text(lines[0] + "\n" + lines[2] + "\n", encoding="utf-8")
+    ok, _ = trail.verify(tmp)
+    check("deleting an entry breaks the chain", ok is False)
+
+
+def test_trail_never_holds_a_secret(tmp):
+    trail.append(event(tool="Bash",
+                       command="export TOKEN=%s" % SECRETS[0]), tmp)
+    written = next((Path(tmp) / trail.TRAIL_DIR).glob("*.jsonl")).read_text(encoding="utf-8")
+    check("a secret in a command never reaches the trail", SECRETS[0] not in written)
+
+
+def test_trail_queries(tmp):
+    trail.append(event(file_path="src/app.py"), tmp)
+    trail.append(event(file_path="src/other.py"), tmp)
+    trail.append(event(tool="Bash", command="ls"), tmp)
+
+    records = trail.entries(tmp)
+    equal("who touched this file", len(trail.touched(records, "src/app.py")), 1)
+    summary = trail.summarise(records)
+    equal("counted in total", summary["total"], 3)
+    equal("and by tool", summary["by_tool"]["Edit"], 2)
+
+
+def test_trail_survives_an_odd_payload(tmp):
+    """A recorder that throws stops the agent. It must not throw."""
+    entry = trail.append({"tool_name": "Weird", "tool_input": "not a dict"}, tmp)
+    equal("an unexpected payload is still recorded", entry["tool"], "Weird")
+    check("with no target invented", entry["target"] is None)
+    ok, _ = trail.verify(tmp)
+    check("and the chain still verifies", ok)
+
+
 # --- the suite itself ------------------------------------------------------
 
 def test_cli_runs():
@@ -224,10 +348,14 @@ NEEDS_TMP = [
     test_duplication, test_skips, test_ratchet_holds_and_trips,
     test_ratchet_improvement_passes, test_ratchet_exception,
     test_no_baseline, test_allowance,
+    test_trail_appends_and_chains, test_trail_detects_tampering,
+    test_trail_removal_is_caught, test_trail_never_holds_a_secret,
+    test_trail_queries, test_trail_survives_an_odd_payload,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
-    test_cli_runs,
+    test_cli_runs, test_secrets_never_survive,
+    test_content_is_fingerprinted_not_stored, test_long_values_are_shortened,
 ]
 
 
