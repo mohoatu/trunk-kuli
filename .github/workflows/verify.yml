@@ -1,0 +1,83 @@
+# kuli checks itself with the thing it sells.
+#
+# This project enforces the fleet's rules, so it is held to them first: its
+# own suite on every push, its own ratchet against its own baseline, and a
+# job that fails if a dependency manifest ever appears.
+#
+# Windows is in the matrix for the usual reason — these tools print names from
+# Vietnamese repositories and the Windows console defaults to cp1252.
+
+name: verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Every check
+        run: python tests/run.py
+
+  ratchet:
+    name: nothing got worse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: kuli ratchet
+        run: python -m kuli.cli ratchet
+
+  review-cost:
+    name: this change is readable
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # Exit 2 means the gate could not judge — no acceptance-criterion
+      # identifiers were claimed. That is reported, not treated as a failure:
+      # a gate that cannot judge must neither pass nor block.
+      - name: kuli review-cost
+        run: |
+          python -m kuli.cli review-cost --base origin/${{ github.base_ref }} || code=$?
+          if [ "${code:-0}" = "1" ]; then exit 1; fi
+          exit 0
+
+  no-dependencies:
+    name: the dependency list is still empty
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if a manifest appeared
+        shell: bash
+        run: |
+          found=$(ls requirements.txt pyproject.toml setup.py Pipfile poetry.lock 2>/dev/null || true)
+          if [ -n "$found" ]; then
+            echo "A dependency manifest appeared: $found"
+            echo "kuli runs on the standard library. A gate that needs installing is a gate somebody skips."
+            exit 1
+          fi
+          echo "No dependency manifest. Good."
