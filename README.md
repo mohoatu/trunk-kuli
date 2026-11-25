@@ -61,6 +61,9 @@ pays for it. That is the direct counter to the documented behaviour: an agent
 left alone patches rather than restructures, because patching passes the test
 and restructuring was never asked for.
 
+These are the first two gates built, because they are the two that nothing
+else already does. See [Using it](#using-it).
+
 ## What this claims, and what it does not
 
 - **It guarantees that work which breaks the process does not get through.**
@@ -110,6 +113,156 @@ the same gate, for the same reason**.
 That last part is the real test. Anyone can call a tool model-agnostic while
 all their models happen to succeed. Agreement matters when the answer is *no*.
 
+## Using it
+
+No installation and no dependencies. Python 3.10 or newer, standard library
+only — copy or clone the `kuli/` package next to your project, or add this
+repository as a sibling and call it by path.
+
+```bash
+python -m kuli.cli --help
+```
+
+### 1. See where you stand
+
+```bash
+python -m kuli.cli --root ../my-project measure
+```
+
+```json
+{
+  "python": {
+    "duplication": 0.0643,
+    "erosion": 0.3168,
+    "max_complexity": 17,
+    "max_nesting": 4,
+    "max_statements": 60,
+    "units": 79,
+    "verbosity": 10.684
+  }
+}
+```
+
+Read them as: **erosion** is the share of all complexity held by the worst
+tenth of units — concentration, not total. **verbosity** is statements per
+unit. **duplication** is the share of substantial lines that appear more than
+once. A *unit* is a function in Python and a file in JavaScript, so the two
+languages are reported separately and are not comparable to each other.
+
+### 2. Draw the line
+
+```bash
+python -m kuli.cli --root ../my-project baseline
+```
+
+```
+Baseline written to ../my-project/.kuli/baseline.json
+  python      52 units, erosion 0.266, verbosity 6.6, duplication 0.082
+
+From here a measure may be held or improved, never loosened.
+```
+
+Commit `.kuli/baseline.json`. Baseline **after** deciding what to exclude —
+freezing a wrong number and then defending it is worse than having none.
+
+### 3. Hold it
+
+```bash
+python -m kuli.cli --root ../my-project ratchet
+```
+
+Nothing got worse, exit 0. Something did, exit 1 — and it names what, and who
+is carrying it:
+
+```
+The ratchet refused this change.
+
+  python / erosion: 0.2657 -> 0.2866 (worse by 0.0209)
+      complexity is concentrating into fewer units — the usual sign that
+      something was patched instead of restructured
+      carrying it: kuli/measures.py::_deliberately_awful (complexity 14)
+      carrying it: kuli/measures.py::duplication (complexity 8)
+  python / max_complexity: 8 -> 14 (worse by 6)
+      the worst single unit got worse
+  python / max_nesting: 5 -> 7 (worse by 2)
+      the deepest nesting got deeper
+
+This is not a rejection. Include the refactor that pays for it,
+or record an exception in kuli.json with a reason, which stays
+visible until it is repaid.
+```
+
+That output is from a real run: a deliberately awful function was added to
+this repository to check the ratchet goes red, then removed.
+
+### 4. Keep changes readable
+
+```bash
+python -m kuli.cli review-cost --base origin/main --budget 120
+```
+
+Slop defined as an asymmetry — work that costs far less to produce than to
+review. That is a ratio, so it is measurable: added lines per acceptance
+criterion the change claims to serve. Generated files are excluded; a
+thousand lines serving one criterion is slop by arithmetic, whatever it
+contains.
+
+When a change claims no criteria the gate **abstains and says so**:
+
+```json
+{
+  "identifiers": [],
+  "note": "No acceptance-criterion identifiers found in this change. This gate
+           abstains rather than guessing a verdict it cannot support."
+}
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| **0** | The gate passed |
+| **1** | The gate refused |
+| **2** | The gate could **not judge** — no baseline, not a git repository, no criteria claimed |
+
+Two is not a pass. A gate that cannot answer a question must never report
+success for it.
+
+### Configuration — `kuli.json`
+
+Optional, at the project root. Everything defaults to strict.
+
+```json
+{
+  "tier": "A",
+  "skip": ["embed", "vendor"],
+  "allowances": { "python": { "verbosity": 0.5 } },
+  "exceptions": {
+    "javascript": { "duplication": "generated bundle inlines the engine; see #42" }
+  }
+}
+```
+
+- **`skip`** — directories left out of measurement. Use it for generated
+  bundles and vendored code, and for nothing else: excluding real source is
+  the easiest way to fake a flat line.
+- **`allowances`** — how much a measure may drift before the ratchet trips.
+  Defaults to zero.
+- **`exceptions`** — a measure allowed to get worse, **with a reason**. The
+  debt is printed on every run until it is repaid. Debt taken knowingly is
+  engineering; debt taken silently is what this project exists to prevent.
+
+### In CI
+
+```yaml
+- name: nothing got worse
+  run: python -m kuli.cli ratchet
+```
+
+The CLI is the authority. Editor and agent integrations call this same
+command rather than reimplementing it — which is what stops the gates
+disappearing when the model changes.
+
 ## Documents
 
 | Document | What it covers |
@@ -133,9 +286,30 @@ without it. Nothing else counts as done.
 
 ## Status
 
-Specification written. Implementation not started. Six open questions are
-recorded rather than guessed; two of them shape the architecture and are
-answered before any code.
+**Built and running: the two ratchet gates.** `measure`, `baseline`, `ratchet`
+and `review-cost`, covering Python and JavaScript. 40 checks on Linux and
+Windows across Python 3.10 and 3.13, and the suite makes the ratchet trip on
+purpose rather than only watching it agree — a gate nobody has seen go red is
+not known to work. kuli is measured by its own ratchet in its own CI.
+
+**Specified, not yet built:** the classified local brain, the credential
+proxy, provider adapters, the other seven gates, the night/approval-window
+split, cross-provider review, and the conformance suite.
+
+Nine open questions are recorded rather than guessed; two of them shape the
+architecture and are answered before more code.
+
+### Honest limits of what is built
+
+- **The JavaScript measures are a heuristic**, not a parser — a real JS parser
+  would be a dependency, and that is a trade this project does not make. The
+  numbers are wrong in detail and consistent over time, and a ratchet compares
+  a measure against itself, so the bias cancels. An inaccurate measure is a
+  poor report and a perfectly good ratchet.
+- **Nesting is not measured for JavaScript** and is reported as zero.
+- **`review-cost` needs identified acceptance criteria** (`A4.4`, `I2`, `R5`)
+  in the diff or commit messages. Without them it abstains.
+- **Java, Go and other languages are not measured at all.**
 
 ## Where it comes from
 
