@@ -216,3 +216,50 @@ remain and their order has changed on the evidence of the day:
 | 5 | `CLAUDE.md` referencing the constitution | the projects without one |
 | 6 | CI for text-to-video | that project |
 | 7 | A test suite for aws-migration-poc | that project, still last on purpose |
+
+---
+
+## 8. The ratchet, across the fleet — 25/11/2026
+
+`kuli` is now wired into every repository that has Python or JavaScript in it.
+Each one carries a `kuli.json` saying what is excluded and why, a committed
+`.kuli/baseline.json`, and a CI job named **"nothing got worse"**.
+
+| Project | Baseline (erosion / verbosity / duplication) |
+|---|---|
+| p2p-lending | py 0.317 / 10.7 / 0.064 |
+| migration-verify | py 0.338 / 12.2 / 0.070 |
+| nhau-di | js 0.404 / 78.2 / 0.092 · py 0.000 / 5.3 / 0.000 |
+| aws-migration-poc | py 0.192 / 14.4 / 0.523 |
+| size-fit | js 0.305 / 126.4 / 0.163 · py 0.000 / 11.5 / 0.046 |
+| confluence-table-audit | js 0.429 / 91.4 / 0.183 · py 0.000 / 5.6 / 0.029 |
+
+**kuli is pinned to tag `v0.1.0` in every workflow.** Changing how a measure
+is computed changes every number it has ever produced, so a floating version
+would silently invalidate all six baselines at once. Bumping the tag is a
+decision, taken together with a re-baseline.
+
+### What was excluded, and what was not
+
+`skip` is the easiest way to fake a flat line, so each entry has a reason:
+
+- **size-fit** excludes `confluence-table-audit` (a separate product, with its
+  own baseline), and `embed/` and `data/` — generated bundles that inline
+  their own sources. Excluding them moved the JavaScript duplication figure
+  from **0.357 to 0.163**: the first number was an artefact of the build, and
+  freezing it would have meant defending a wrong number for months.
+- **nhau-di** excludes `dist-zalo/`, the bundled build output.
+- **migration-verify excludes nothing**, including `legacy-demo/` and
+  `cobol-demo/` — deliberately old-style code written to be migrated. It would
+  have been easy to exclude them as "not real source". They are measured, and
+  the ratchet compares them against themselves.
+- **aws-migration-poc excludes nothing** either. Its duplication of **0.523**
+  is high and is not a defect: `worker.py` is a faithful port of the Perl
+  original, and faithfulness is the entire point of the project.
+
+### The limit of all six numbers
+
+A baseline records where a project **is**, not where it should be. None of
+these figures says the code is good. They say that from today it does not get
+worse without somebody noticing — which is the only claim the arithmetic
+supports.
