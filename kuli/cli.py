@@ -14,7 +14,7 @@ import argparse
 import json
 import sys
 
-from . import measures, providers, ratchet, review_cost, trail
+from . import classify, measures, providers, ratchet, review_cost, trail
 
 
 def _utf8():
@@ -193,6 +193,10 @@ def _add_trail(sub):
     sub.add_parser("report", help="what each provider did"
                    ).set_defaults(func=cmd_report)
 
+    level = sub.add_parser("classify", help="how sensitive a path is, and why")
+    level.add_argument("paths", nargs="+")
+    level.set_defaults(func=cmd_classify)
+
 
 ROW = "%-16s %-14s %-18s %-9s %s"
 
@@ -250,6 +254,18 @@ def cmd_report(args):
     silent = sorted(_registered_ids(args.root) - set(rows))
     if silent:
         print("\n  registered but never seen: %s" % ", ".join(silent))
+    return 0
+
+
+def cmd_classify(args):
+    config = ratchet.load_config(args.root)
+    try:
+        for target in args.paths:
+            level, reason = classify.explain(target, config)
+            print("%-4s %-46s %s" % (level, target, reason))
+    except classify.ClassificationError as exc:
+        print("The classification rules are not usable: %s" % exc, file=sys.stderr)
+        return 2
     return 0
 
 

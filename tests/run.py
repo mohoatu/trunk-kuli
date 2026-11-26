@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    measures, providers, ratchet, redact, review_cost, trail,
+    classify, measures, providers, ratchet, redact, review_cost, trail,
 )
 
 RESULTS = []
@@ -474,6 +474,91 @@ def test_per_provider_rows(tmp):
     equal("and the distinct tools", len(rows["local"]["tools"]), 2)
 
 
+# --- classification --------------------------------------------------------
+
+RULES = {"classification": {"rules": [
+    {"match": "docs/**", "level": "L0"},
+    {"match": "business/**", "level": "L2"},
+    {"match": "business/public/**", "level": "L0"},
+    {"match": "**/.env", "level": "L0"},
+]}}
+
+
+def level(path, config=None):
+    return classify.level_of(path, config)
+
+
+def test_unclassified_is_confidential():
+    equal("a path no rule mentions is L2", level("notes.md"), "L2")
+    equal("not L0, which would be the convenient default",
+          level("src/anything/at/all.py", RULES), "L2")
+
+
+def test_a_person_may_set_any_level():
+    equal("a rule sets the level", level("docs/spec.md", RULES), "L0")
+    equal("including confidential", level("business/plan.md", RULES), "L2")
+    _, reason = classify.explain("docs/spec.md", RULES)
+    check("and the reason names the rule", "docs/**" in reason, reason)
+
+
+def test_the_more_specific_rule_wins():
+    equal("a public folder can be carved out of a confidential one",
+          level("business/public/flyer.md", RULES), "L0")
+    equal("while its sibling stays confidential",
+          level("business/private/deal.md", RULES), "L2")
+
+
+def test_secrets_can_only_be_raised():
+    # The rule says L0. The built-in says secret. Secret wins.
+    equal("a built-in secret pattern overrides a rule that lowers it",
+          level(".env", RULES), "L3")
+    _, reason = classify.explain(".env", RULES)
+    check("and says it raised it", "raised it" in reason, reason)
+
+    for path in ("config/.env.production", "app/id_rsa", "deploy/key.pem",
+                 "x/.ssh/config", "a/secrets/token.txt", "sa/.aws/credentials"):
+        equal("%s is L3 by default" % path, level(path), "L3")
+
+
+def test_dotfiles_are_not_mangled():
+    # `.env` once became `env` through lstrip("./") and stopped matching the
+    # pattern written to catch it. A dotfile is the worst thing to fumble.
+    equal("a leading ./ is removed as a prefix, not as characters",
+          classify.normalise("./.env"), ".env")
+    equal("and a bare dotfile is untouched", classify.normalise(".env"), ".env")
+    equal("so it is still caught", level("./.env"), "L3")
+
+
+def test_windows_separators():
+    equal("backslashes are compared as forward slashes",
+          level("business\\public\\flyer.md", RULES), "L0")
+
+
+def test_glob_translation():
+    check("* does not cross a directory",
+          not classify.to_regex("a/*.py").match("a/b/c.py"))
+    check("** does", classify.to_regex("a/**").match("a/b/c.py"))
+    check("**/ matches at the root too", classify.to_regex("**/x.py").match("x.py"))
+    check("? matches one character", classify.to_regex("a?.py").match("ab.py"))
+
+
+def test_bad_rules_are_refused():
+    for broken in ({"match": "a/**"}, {"match": "a/**", "level": "L9"},
+                   {"level": "L1"}):
+        try:
+            classify.level_of("a/b", {"classification": {"rules": [broken]}})
+            check("a rule like %r is refused" % broken, False, "it was accepted")
+        except classify.ClassificationError:
+            check("a rule like %r is refused" % broken, True)
+
+
+def test_bundle_level_is_the_highest_part():
+    equal("the highest wins", classify.highest(["L0", "L2", "L1"]), "L2")
+    equal("a secret dominates", classify.highest(["L0", "L3"]), "L3")
+    equal("an empty bundle is still L2", classify.highest([]), "L2")
+    equal("unknown levels are ignored", classify.highest(["L9", "L1"]), "L1")
+
+
 # --- the suite itself ------------------------------------------------------
 
 def test_cli_runs():
@@ -502,6 +587,11 @@ NO_TMP = [
     test_cli_runs, test_secrets_never_survive,
     test_content_is_fingerprinted_not_stored, test_long_values_are_shortened,
     test_clearance_comparison,
+    test_unclassified_is_confidential, test_a_person_may_set_any_level,
+    test_the_more_specific_rule_wins, test_secrets_can_only_be_raised,
+    test_dotfiles_are_not_mangled, test_windows_separators,
+    test_glob_translation, test_bad_rules_are_refused,
+    test_bundle_level_is_the_highest_part,
 ]
 
 

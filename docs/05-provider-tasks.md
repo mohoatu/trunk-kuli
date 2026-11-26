@@ -49,7 +49,7 @@ Per-provider totals from the trail: actions, tools used, days active.
 Pure logic. No network, no model, no keys. All of it testable in a
 temporary directory, which is why it comes before anything that costs money.
 
-### T4 — Classification resolver · M
+### T4 — Classification resolver · M · **done 26/11/2026**
 Given a path, return its level: from `kuli.json`, from defaults, and
 **unclassified means L2**.
 
@@ -234,3 +234,37 @@ Adding this tripped kuli's own ratchet on verbosity — paid for by splitting
 `cmd_providers` and `cmd_report`, not by an exception.
 
 **Next:** T4 — the classification resolver. Pure logic, no network, no model.
+
+---
+
+## T4 as built — 26/11/2026
+
+`kuli classify <path>...` answers how sensitive a path is **and why**. The
+reason is printed, not just the level, because the constitution says a
+proposed level is recorded with its reason.
+
+124 checks, up from 94.
+
+Three rules, and the order is the design:
+
+**Unclassified means L2.** Not L0. The file nobody thought about is exactly
+the file nobody checked.
+
+**A person may set any level**, through rules in `kuli.json`. That is what
+makes a downgrade a human act — there is no path by which the harness lowers
+a level on its own. Where two rules match, the **more specific** wins, so a
+public folder can be carved out of a confidential one.
+
+**Built-in secret patterns may only raise it.** A rule saying `.env` is L0 is
+overruled; `.env` is L3. The harness may be more careful than it was told and
+never less — constitution 3, in one line of code.
+
+### A bug worth recording
+
+`.env` was not being caught. `normalise()` used `lstrip("./")`, which strips a
+*set of characters* rather than a prefix — so `.env` became `env` and stopped
+matching the pattern written to catch it. A dotfile is the worst possible
+thing for this module to fumble, and it fumbled the most common one.
+
+Found by running the command on real paths rather than on the paths the tests
+had been written around. `test_dotfiles_are_not_mangled` now pins it.
