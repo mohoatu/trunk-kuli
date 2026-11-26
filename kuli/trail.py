@@ -27,7 +27,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import redact
+from . import providers, redact
 
 TRAIL_DIR = Path(".kuli/trail")
 HEAD_FILE = TRAIL_DIR / "HEAD"
@@ -77,11 +77,22 @@ def first(event, keys, env=None, default="unknown"):
     return default
 
 
-def actor_from(event):
-    """Who did it, as far as the boundary can tell."""
+def actor_from(event, root="."):
+    """Who did it, as far as the boundary can tell.
+
+    The provider comes from the registry rather than from the event, because
+    the event is written by the agent and the registry is not. With no
+    registry the answer is `unknown`, which is recorded honestly rather than
+    guessed from whatever is in the environment.
+    """
+    try:
+        running = providers.active(root)
+    except (providers.RegistryError, ValueError):
+        running = dict(providers.UNKNOWN)
     return {
-        "provider": first(event, ("provider",), "KULI_PROVIDER"),
-        "model": first(event, ("model",), "KULI_MODEL"),
+        "provider": first(event, ("provider",), default=running["id"]),
+        "model": first(event, ("model",), default=running.get("model")) or "unknown",
+        "clearance": running.get("clearance"),
         "session": first(event, ("session_id", "session")),
         "run": first(event, ("run",), "KULI_RUN"),
     }
@@ -109,7 +120,7 @@ def build(event, root="."):
         "ts": now(),
         "event": first(event, ("hook_event_name", "event")),
         "tool": first(event, ("tool_name", "tool")),
-        "actor": actor_from(event),
+        "actor": actor_from(event, root),
         "target": target_from(event),
         "cwd": redact.shorten(str(first(event, ("cwd",), default=root))),
         "detail": redact.clean(payload_of(event)),
@@ -177,6 +188,24 @@ def summarise(records):
         by_day[day] = by_day.get(day, 0) + 1
     return {"total": len(records), "by_tool": by_tool,
             "by_actor": by_actor, "by_day": by_day}
+
+
+def per_provider(records):
+    """One row per provider seen in the trail: what it did, and when."""
+    rows = {}
+    for entry in records:
+        actor = entry.get("actor", {})
+        row = rows.setdefault(actor.get("provider", "unknown"), {
+            "actions": 0, "tools": set(), "models": set(),
+            "first": None, "last": None,
+        })
+        row["actions"] += 1
+        row["tools"].add(entry.get("tool"))
+        row["models"].add(actor.get("model") or "unknown")
+        stamp = entry.get("ts", "")
+        row["first"] = min(row["first"] or stamp, stamp)
+        row["last"] = max(row["last"] or stamp, stamp)
+    return rows
 
 
 def touched(records, needle):

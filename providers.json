@@ -1,0 +1,27 @@
+{
+  "_comment": "Edit by hand. Clearance is a decision, not a default.",
+  "providers": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "shape": "agent-product",
+      "adapter": "wrapped",
+      "clearance": "L1",
+      "detect": {
+        "env": "CLAUDECODE"
+      },
+      "model_env": "KULI_MODEL",
+      "capabilities": {
+        "tool_calling": true,
+        "parallel_tool_calls": true,
+        "context_tokens": null
+      },
+      "cost_per_mtok": {
+        "in": null,
+        "out": null
+      },
+      "good_for": [],
+      "not_for": []
+    }
+  ]
+}

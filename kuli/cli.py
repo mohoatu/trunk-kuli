@@ -14,7 +14,7 @@ import argparse
 import json
 import sys
 
-from . import measures, ratchet, review_cost, trail
+from . import measures, providers, ratchet, review_cost, trail
 
 
 def _utf8():
@@ -185,6 +185,72 @@ def _add_trail(sub):
 
     sub.add_parser("audit", help="verify the trail was not altered"
                    ).set_defaults(func=cmd_audit)
+
+    reg = sub.add_parser("providers", help="who may run here, and at what clearance")
+    reg.add_argument("--init", action="store_true", help="write a starter registry")
+    reg.set_defaults(func=cmd_providers)
+
+    sub.add_parser("report", help="what each provider did"
+                   ).set_defaults(func=cmd_report)
+
+
+ROW = "%-16s %-14s %-18s %-9s %s"
+
+
+def _print_registry(entries, running):
+    print(ROW % ("ID", "CLEARANCE", "SHAPE", "ADAPTER", ""))
+    for entry in entries:
+        mark = "<- running" if entry["id"] == running["id"] else ""
+        print(ROW % (entry["id"], entry["clearance"], entry["shape"],
+                     entry["adapter"], mark))
+    if running["id"] == "unknown":
+        print("\nNone of them is detected in this process. Actions recorded "
+              "now will say 'unknown', which is the honest answer.")
+
+
+def cmd_providers(args):
+    if args.init:
+        print("Wrote %s" % providers.write_starter(args.root))
+        return 0
+    try:
+        entries = providers.load(args.root)
+    except providers.RegistryError as exc:
+        print("The registry is not usable: %s" % exc, file=sys.stderr)
+        return 2
+    if not entries:
+        print("No providers registered. Write one with: kuli providers --init")
+        return 2
+    _print_registry(entries, providers.active(args.root))
+    return 0
+
+
+def _report_row(name, row):
+    print("  %-16s %6d actions  %2d tools  %s .. %s"
+          % (name, row["actions"], len(row["tools"]),
+             (row["first"] or "")[:10], (row["last"] or "")[:10]))
+    print("%22s models: %s" % ("", ", ".join(sorted(row["models"]))))
+
+
+def _registered_ids(root):
+    try:
+        return {e["id"] for e in providers.load(root)}
+    except providers.RegistryError:
+        return set()
+
+
+def cmd_report(args):
+    records = trail.entries(args.root)
+    if not records:
+        print("Nothing recorded yet. The trail is empty.")
+        return 0
+    rows = trail.per_provider(records)
+    print("%d actions across %d provider(s)" % (len(records), len(rows)))
+    for name, row in sorted(rows.items(), key=lambda kv: -kv[1]["actions"]):
+        _report_row(name, row)
+    silent = sorted(_registered_ids(args.root) - set(rows))
+    if silent:
+        print("\n  registered but never seen: %s" % ", ".join(silent))
+    return 0
 
 
 def build_parser():

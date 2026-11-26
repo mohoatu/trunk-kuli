@@ -9,6 +9,7 @@ here, not only to agree.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -18,7 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from kuli import measures, ratchet, redact, review_cost, trail  # noqa: E402
+from kuli import (  # noqa: E402
+    measures, providers, ratchet, redact, review_cost, trail,
+)
 
 RESULTS = []
 
@@ -332,6 +335,145 @@ def test_trail_survives_an_odd_payload(tmp):
     check("and the chain still verifies", ok)
 
 
+# --- the registry ----------------------------------------------------------
+
+GOOD = {"id": "x", "name": "X", "shape": "raw-model",
+        "adapter": "openai_compatible", "clearance": "L2"}
+
+
+def registry(tmp, *entries):
+    write(tmp, "providers.json", json.dumps({"providers": list(entries)}))
+
+
+def with_env(**values):
+    """Set environment variables, returning what to restore."""
+    before = {k: os.environ.get(k) for k in values}
+    for key, value in values.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    return before
+
+
+def restore_env(before):
+    for key, value in before.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def test_registry_absent_means_none(tmp):
+    equal("no file means no providers", providers.load(tmp), [])
+    before = with_env(KULI_PROVIDER=None, CLAUDECODE=None)
+    try:
+        equal("and the active provider is unknown, not invented",
+              providers.active(tmp)["id"], "unknown")
+    finally:
+        restore_env(before)
+
+
+def test_registry_refuses_what_it_cannot_trust(tmp):
+    for broken, why in (
+        ({k: v for k, v in GOOD.items() if k != "clearance"}, "a missing field"),
+        (dict(GOOD, clearance="L9"), "a clearance outside the set"),
+        (dict(GOOD, shape="something"), "an unknown shape"),
+        (dict(GOOD, adapter="magic"), "an unknown adapter"),
+    ):
+        registry(tmp, broken)
+        s_raises = providers.RegistryError
+        try:
+            providers.load(tmp)
+            check("the registry refuses %s" % why, False, "it was accepted")
+        except s_raises:
+            check("the registry refuses %s" % why, True)
+
+    registry(tmp, GOOD, dict(GOOD, name="Y"))
+    try:
+        providers.load(tmp)
+        check("the registry refuses two providers with one id", False)
+    except providers.RegistryError:
+        check("the registry refuses two providers with one id", True)
+
+
+def test_detection(tmp):
+    registry(tmp,
+             dict(GOOD, id="local", detect={"env": "KULI_LOCAL"}),
+             dict(GOOD, id="cloud", clearance="L1",
+                  detect={"env": "KULI_CLOUD", "equals": "yes"}))
+
+    before = with_env(KULI_PROVIDER=None, KULI_LOCAL=None, KULI_CLOUD=None)
+    try:
+        equal("nothing set means unknown", providers.active(tmp)["id"], "unknown")
+
+        with_env(KULI_LOCAL="1")
+        equal("an env marker selects its provider",
+              providers.active(tmp)["id"], "local")
+
+        with_env(KULI_CLOUD="no")
+        equal("a value that does not match does not select",
+              providers.active(tmp)["id"], "local")
+
+        with_env(KULI_LOCAL=None, KULI_CLOUD="yes")
+        equal("a matching value does", providers.active(tmp)["id"], "cloud")
+
+        with_env(KULI_PROVIDER="local")
+        equal("an explicit KULI_PROVIDER beats detection",
+              providers.active(tmp)["id"], "local")
+    finally:
+        restore_env(before)
+
+
+def test_clearance_comparison():
+    local = dict(GOOD, clearance="L2")
+    hosted = dict(GOOD, clearance="L1")
+    check("L2 may see L2", providers.may_see(local, "L2"))
+    check("L2 may see L1", providers.may_see(local, "L1"))
+    check("L1 may NOT see L2", not providers.may_see(hosted, "L2"))
+    check("nobody may see L3 on a clearance of L2",
+          not providers.may_see(local, "L3"))
+    check("an unknown provider may see nothing",
+          not providers.may_see(providers.UNKNOWN, "L0"))
+
+
+def test_starter_never_overwrites(tmp):
+    providers.write_starter(tmp)
+    check("a starter registry loads", len(providers.load(tmp)) == 1)
+    try:
+        providers.write_starter(tmp)
+        check("writing over an existing registry is refused", False)
+    except providers.RegistryError:
+        check("writing over an existing registry is refused", True)
+
+
+def test_trail_records_the_registered_provider(tmp):
+    registry(tmp, dict(GOOD, id="local", detect={"env": "KULI_LOCAL"},
+                       model_env="KULI_MODEL"))
+    before = with_env(KULI_PROVIDER=None, KULI_LOCAL="1", KULI_MODEL="qwen-x")
+    try:
+        entry = trail.append(event(file_path="a.py"), tmp)
+        equal("the trail names the provider", entry["actor"]["provider"], "local")
+        equal("and the model", entry["actor"]["model"], "qwen-x")
+        equal("and its clearance", entry["actor"]["clearance"], "L2")
+    finally:
+        restore_env(before)
+
+
+def test_per_provider_rows(tmp):
+    registry(tmp, dict(GOOD, id="local", detect={"env": "KULI_LOCAL"}))
+    before = with_env(KULI_PROVIDER=None, KULI_LOCAL="1", KULI_MODEL=None)
+    try:
+        trail.append(event(file_path="a.py"), tmp)
+        trail.append(event(tool="Bash", command="ls"), tmp)
+    finally:
+        restore_env(before)
+    rows = trail.per_provider(trail.entries(tmp))
+    equal("one row per provider", list(rows), ["local"])
+    equal("counting its actions", rows["local"]["actions"], 2)
+    equal("and the distinct tools", len(rows["local"]["tools"]), 2)
+
+
 # --- the suite itself ------------------------------------------------------
 
 def test_cli_runs():
@@ -351,11 +493,15 @@ NEEDS_TMP = [
     test_trail_appends_and_chains, test_trail_detects_tampering,
     test_trail_removal_is_caught, test_trail_never_holds_a_secret,
     test_trail_queries, test_trail_survives_an_odd_payload,
+    test_registry_absent_means_none, test_registry_refuses_what_it_cannot_trust,
+    test_detection, test_starter_never_overwrites,
+    test_trail_records_the_registered_provider, test_per_provider_rows,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
     test_cli_runs, test_secrets_never_survive,
     test_content_is_fingerprinted_not_stored, test_long_values_are_shortened,
+    test_clearance_comparison,
 ]
 
 
