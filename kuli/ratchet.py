@@ -27,11 +27,26 @@ CONFIG_PATH = Path("kuli.json")
 EPSILON = 1e-9
 
 
+#: Keys this version understands. `classification` decides what a model may
+#: see, so a key that is quietly ignored here is a permission nobody applied.
+CONFIG_KEYS = ("tier", "note", "skip", "allowances", "exceptions",
+               "classification", "tool_output_default")
+
+
+class ConfigError(Exception):
+    """A configuration that cannot be trusted. Never run on a guess."""
+
+
 def load_config(root="."):
     path = Path(root) / CONFIG_PATH
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    extra = sorted(set(data) - set(CONFIG_KEYS))
+    if extra:
+        raise ConfigError("%s carries unknown key(s): %s. Understood: %s."
+                          % (path, ", ".join(extra), ", ".join(CONFIG_KEYS)))
+    return data
 
 
 def load_baseline(root="."):

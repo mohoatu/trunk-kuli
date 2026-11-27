@@ -5,6 +5,8 @@
     kuli ratchet              fail if any measure got worse
     kuli review-cost --base X fail if the change costs more to read than it
                               should for the criteria it serves
+    kuli grant                what a sub-task would hold, next to its ceiling
+    kuli capability           the same grant, signed and with a deadline
 
 Exit code 0 means pass, 1 means a gate refused, 2 means the gate could not
 judge. A gate that cannot judge never reports success.
@@ -15,9 +17,16 @@ import json
 import sys
 
 from . import (
-    bundle, classify, contract, duties, measures, providers, ratchet,
-    review_cost, toolguard, trail,
+    bundle, capability, classify, contract, duties, gateway, grants, measures,
+    providers, ratchet, review_cost, toolguard, trail,
 )
+
+#: Every refusal that means *this gate could not judge, so nothing passed*.
+#: Collected in one place so a permission failure can never be mistaken for a
+#: pass by a command that forgot to catch it.
+CANNOT_JUDGE = (providers.RegistryError, ratchet.ConfigError,
+                classify.ClassificationError, grants.GrantError,
+                capability.CapabilityError, gateway.GatewayError)
 
 
 def _utf8():
@@ -420,6 +429,54 @@ def _contract_action(args):
     return CONTRACT_ACTIONS[args.action](args)
 
 
+def _narrowing(args):
+    """The limits named on the command line, as `narrow` keywords."""
+    return {"level": args.level, "scope": args.scope, "tools": args.tools}
+
+
+def _root_grant(args):
+    entry = _resolve_provider(args)
+    if entry is None:
+        raise grants.GrantError("no provider %r in the registry" % args.provider)
+    return grants.for_provider(entry)
+
+
+def cmd_grant(args):
+    """What a sub-task would hold. Shows that asking for more gives less."""
+    root = _root_grant(args)
+    narrowed = root.narrow(**_narrowing(args))
+    print(json.dumps({"root": root.as_dict(), "narrowed": narrowed.as_dict()},
+                     indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_capability(args):
+    key = capability.signing_key(args.root)
+    if args.token:
+        print(json.dumps(capability.verify(args.token, key).as_dict(),
+                         indent=2, sort_keys=True))
+        return 0
+    grant = _root_grant(args).narrow(**_narrowing(args))
+    print(capability.mint(grant, key, args.ttl))
+    return 0
+
+
+def _add_authority(sub):
+    for name, helptext in (("grant", "what a sub-task would hold"),
+                           ("capability", "a signed, expiring grant")):
+        cmd = sub.add_parser(name, help=helptext)
+        cmd.add_argument("--provider", help="registry id; defaults to the active one")
+        cmd.add_argument("--level", help="narrow to this level at most")
+        cmd.add_argument("--scope", nargs="*", help="narrow to these paths")
+        cmd.add_argument("--tools", nargs="*", help="narrow to these tools")
+        if name == "capability":
+            cmd.add_argument("--ttl", type=int, default=900, help="seconds")
+            cmd.add_argument("--verify", dest="token", help="read a token instead")
+            cmd.set_defaults(func=cmd_capability)
+        else:
+            cmd.set_defaults(func=cmd_grant)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="kuli", description=__doc__)
     parser.add_argument("--root", default=".", help="repository root")
@@ -428,13 +485,18 @@ def build_parser():
     _add_trail(sub)
     _add_boundary(sub)
     _add_procedure(sub)
+    _add_authority(sub)
     return parser
 
 
 def main(argv=None):
     _utf8()
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except CANNOT_JUDGE as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

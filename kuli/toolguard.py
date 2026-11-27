@@ -31,6 +31,7 @@ import re
 from . import trail
 from .bundle import ClearanceError
 from .classify import explain
+from .grants import coerce
 from .providers import clearance_rank
 from .redact import SECRET_PATTERNS
 
@@ -96,15 +97,20 @@ def assess(payload, text, config=None):
     return _raise_from_paths(text, config, level, reason)
 
 
-def check(payload, text, provider, config=None):
-    """Raise unless this result may be shown to this provider."""
+def check(payload, text, authority, config=None):
+    """Raise unless this result may be shown to this authority.
+
+    Takes a `Grant` or a registry entry, for the reason given in
+    `bundle.check_part`: a sub-task's narrowed grant must be what decides,
+    not the ceiling its provider happens to hold in the registry.
+    """
     level, reason = assess(payload, text, config)
-    if clearance_rank(provider.get("clearance")) < clearance_rank(level):
+    grant = coerce(authority)
+    if grant.refusal(level=level):
         raise ClearanceError(
             "a %s result may not go back to %r, cleared to %s: %s. "
             "The result is withheld, not trimmed."
-            % (level, provider.get("id", "unknown"),
-               provider.get("clearance") or "nothing", reason))
+            % (level, grant.principal, grant.level or "nothing", reason))
     return level, reason
 
 

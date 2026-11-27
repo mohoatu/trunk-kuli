@@ -30,7 +30,8 @@ confidential text is the leak arriving by another door.
 from dataclasses import dataclass, field
 
 from .classify import DEFAULT_LEVEL, explain, highest
-from .providers import CLEARANCES, clearance_rank
+from .grants import coerce
+from .providers import CLEARANCES
 
 #: No clearance admits this. See the module docstring.
 NEVER_IN_CONTEXT = "L3"
@@ -74,33 +75,39 @@ class Bundle:
         return "\n\n".join(p.text for p in self.parts)
 
 
-def _refuse(part, provider):
+def _refuse(part, grant):
     raise ClearanceError(
         "%s is %s; provider %r is cleared to %s. "
         "Use a cleared provider or stop — the content is not downgraded."
-        % (part.source, part.level, provider.get("id", "unknown"),
-           provider.get("clearance") or "nothing")
+        % (part.source, part.level, grant.principal, grant.level or "nothing")
     )
 
 
-def check_part(part, provider):
-    """Raise unless this provider may be shown this part."""
+def check_part(part, authority):
+    """Raise unless this authority may be shown this part.
+
+    `authority` is a `Grant`, or a registry entry that `coerce` turns into the
+    root grant it describes. Checking against a grant rather than against the
+    registry is what makes a narrowed sub-task's limit the one that applies:
+    the registry only ever sets the ceiling.
+    """
     if part.level == NEVER_IN_CONTEXT:
         raise ClearanceError(
             "%s is L3. No provider may be given a secret in context, including "
             "one cleared to L3; the credential proxy injects it into the "
             "request instead." % part.source)
-    if clearance_rank(provider.get("clearance")) < clearance_rank(part.level):
-        _refuse(part, provider)
+    grant = coerce(authority)
+    if grant.refusal(level=part.level):
+        _refuse(part, grant)
     return True
 
 
-def assemble(parts, provider):
-    """Build a bundle for this provider, or refuse and say which part."""
+def assemble(parts, authority):
+    """Build a bundle for this authority, or refuse and say which part."""
     parts = tuple(parts)
     for part in parts:
-        check_part(part, provider)
-    return Bundle(provider_id=provider.get("id", "unknown"), parts=parts)
+        check_part(part, authority)
+    return Bundle(provider_id=coerce(authority).principal, parts=parts)
 
 
 def part_for(path, config=None, text=""):

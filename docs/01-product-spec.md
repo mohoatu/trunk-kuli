@@ -144,6 +144,45 @@ column.
 | credential proxy | L3 | `*` |
 | the owner | L3 | `*` |
 
+### 5.1.1 Authority only narrows, and the agent cannot mint it
+
+Two properties added **27/11/2026**, from reading Google's Agent Mesh against
+this project ([`07-orchestrator.md`](07-orchestrator.md)). Both close holes that
+the table above does not describe.
+
+**A grant is a value, and the only way to make one from another is
+`narrow`.** `narrow` returns the *intersection*, so a request for more than the
+parent holds yields the parent's limit:
+
+> root ⊇ root.narrow(…) ⊇ root.narrow(…).narrow(…) ⊇ …
+
+There is no `widen`. This is what makes a hop safe: an agent cleared to L1 that
+starts a sub-task cannot hand the sub-task more than it has, because no call
+exists that would produce such a grant. The registry sets the **ceiling**; every
+grant in the system descends from a registry entry by narrowing. `"*"` is how a
+grant says *everything*, and it has to be written down — an empty list permits
+nothing, which is the honest reading of an empty list.
+
+**A boundary accepts a signature, not a file.** `providers.json` records the
+clearance decision; it does not enforce it, because it is a file in the
+repository that the agent whose clearance it records can edit. A **capability**
+is that grant signed with a key kept outside the repository, carrying an
+expiry, verified in constant time. An agent may still rewrite the registry; it
+cannot sign the entry it invented, so the edit buys it nothing until a person
+signs. The separation-of-duties gate (§8, A1/A2) catches the same thing in git,
+*after* the commit; this catches it at the moment of the call.
+
+Every capability expires. A capability with no expiry is a permission, and the
+difference is the whole point.
+
+### 5.1.2 Permissions fail closed
+
+A measure that cannot judge abstains (`CLAUDE.md`). A permission that cannot
+judge **refuses**. So `providers.json` and `kuli.json` are parsed strictly: a
+key this version does not understand is named and refused rather than ignored,
+because a misspelt `clearence` that is silently skipped is a permission nobody
+applied and everybody believed.
+
 ### 5.2 Irreversible actions
 
 The harness prepares; a person confirms. It never sends mail, pushes to a
@@ -302,6 +341,7 @@ non-zero. No model takes part in the decision.
 | **Classification gate** | Content above a principal's clearance was about to enter its context |
 | **Separation of duties** | The rules and the work they judge changed together, or the rules changed with no second actor |
 | **Contract gate** | An increment has no contract signed by two actors, or its contract changed after work began |
+| **Capability gate** | A call presents no valid signature for the authority it claims, or the grant has expired |
 | **Evidence gate** | `evidence/` is older than the code it claims to describe |
 
 ### 8.1 The current-API gate

@@ -40,6 +40,16 @@ ADAPTERS = ("wrapped", "openai_compatible", "anthropic")
 UNKNOWN = {"id": "unknown", "name": "unknown", "shape": None,
            "adapter": None, "clearance": None, "model": None}
 
+#: Keys this version understands. Anything else is refused rather than
+#: ignored: a misspelt `clearence` that is silently skipped is a permission
+#: nobody applied and everybody believed. A measure may abstain when it cannot
+#: judge; a permission may not.
+DOCUMENT_KEYS = ("_comment", "providers", "services")
+ENTRY_KEYS = ("id", "name", "shape", "adapter", "clearance", "detect",
+              "model_env", "capabilities", "cost_per_mtok", "good_for",
+              "not_for")
+SERVICE_KEYS = ("name", "transport", "target", "note")
+
 
 class RegistryError(Exception):
     """A registry that cannot be trusted. Never fall back to a default."""
@@ -49,18 +59,37 @@ def path_for(root="."):
     return Path(root) / REGISTRY_PATH
 
 
-def load(root="."):
-    """Every registered provider. An absent file means none, not a default."""
+def _only(where, data, allowed):
+    """Refuse a key this version does not understand, naming it."""
+    extra = sorted(set(data) - set(allowed))
+    if extra:
+        raise RegistryError("%s carries unknown key(s): %s. Fail closed rather "
+                            "than ignore a permission field."
+                            % (where, ", ".join(extra)))
+
+
+def registry(root="."):
+    """The whole validated document. An absent file is an empty one."""
     path = path_for(root)
     if not path.exists():
-        return []
+        return {}
     data = json.loads(path.read_text(encoding="utf-8"))
-    entries = data.get("providers", [])
-    validate(entries)
-    return entries
+    if not isinstance(data, dict):
+        raise RegistryError("%s must hold an object" % path)
+    _only(str(path), data, DOCUMENT_KEYS)
+    validate(data.get("providers", []))
+    for service in data.get("services", []):
+        _only("service %r" % service.get("name"), service, SERVICE_KEYS)
+    return data
+
+
+def load(root="."):
+    """Every registered provider. An absent file means none, not a default."""
+    return registry(root).get("providers", [])
 
 
 def _check_one(entry, seen):
+    _only("provider %r" % entry.get("id"), entry, ENTRY_KEYS)
     for field in ("id", "name", "shape", "adapter", "clearance"):
         if not entry.get(field):
             raise RegistryError("a provider is missing %s: %r" % (field, entry))

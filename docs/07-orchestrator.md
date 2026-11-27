@@ -215,6 +215,48 @@ permission code does not yet obey:
 
 ---
 
+## 7.1 Adopted — 27/11/2026
+
+**Option 1 built, Option 3 built on the local side, Option 2 deferred.**
+265 checks, up from 202.
+
+```bash
+kuli grant --provider cloud --level L0 --scope src      # what a sub-task holds
+kuli capability --provider cloud --ttl 300 --level L1   # signed, expiring
+kuli capability --verify <token>                        # what a token carries
+```
+
+Three modules, no dependencies. `kuli/grants.py` is the grant and `narrow`;
+`kuli/capability.py` is `hmac` over a grant, with the key refused if it lives
+inside the repository; `kuli/gateway.py` is `resolve` / `present` / `dispatch`,
+with the mesh transport deliberately absent and refused by name.
+
+`bundle.check_part` and `toolguard.check` now judge against a **grant** rather
+than a registry entry — a registry entry is coerced into the root grant it
+describes, so the ceiling still comes from the file and the limit that applies
+comes from the hop. §5.1.1 of the specification carries the rule.
+
+Option 2's trigger, written down so it is not a mood: **a second machine, a
+second person, or anything running unattended off this laptop.**
+
+### What the gates caught this time
+
+**The ratchet refused `Grant.refusal`** at complexity 11 against a ceiling of
+8 — one function answering *why is this not permitted* for level, scope, tools
+and expiry at once. Split into three helpers plus the expiry check. Paid with
+a refactor, not an exception, which is now four times out of four.
+
+**A test pinned a parameter name**, not the property it meant to pin:
+`assemble` takes *two* arguments and offers no way to soften a refusal, which
+is the point; it was asserting the second one was called `provider`. Renaming
+it to `authority` broke a check that should not have been sensitive to the
+name. The check was updated with the rename rather than the rename abandoned —
+recorded here because the other reading of that sequence is a test being bent
+to fit the code, and the difference is only visible if somebody says which it
+was.
+
+---
+
 ## 8. Appendix — the duties gate refused the commit that introduced it
 
 For the record, because the alternative is quietly not mentioning it.

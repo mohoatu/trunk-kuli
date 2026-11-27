@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    bundle, classify, contract, duties, measures, providers, ratchet,
-    redact, review_cost, toolguard, trail,
+    bundle, capability, classify, contract, duties, gateway, grants, measures,
+    providers, ratchet, redact, review_cost, toolguard, trail,
 )
 
 RESULTS = []
@@ -637,7 +637,8 @@ def test_an_unknown_provider_gets_nothing():
 
 def test_there_is_no_way_to_soften_it():
     parameters = list(inspect.signature(bundle.assemble).parameters)
-    equal("assemble takes only parts and a provider", parameters, ["parts", "provider"])
+    equal("assemble takes only parts and an authority",
+          parameters, ["parts", "authority"])
     check("no parameter offers to truncate, redact or downgrade",
           not any(word in p.lower() for p in parameters
                   for word in ("trunc", "redact", "downgrade", "force", "allow")))
@@ -919,6 +920,279 @@ def test_cli_runs():
     check("and prints json", result.stdout.strip().startswith("{"))
 
 
+# --- authority that only narrows ------------------------------------------
+
+CLOUD = {"id": "cloud", "clearance": "L1"}
+LOCALP = {"id": "local-llm", "clearance": "L2"}
+
+
+def test_a_root_grant_is_the_registry_ceiling():
+    root = grants.for_provider(LOCALP)
+    equal("the root grant takes the registered clearance", root.level, "L2")
+    check("and everything is in scope until it is narrowed",
+          root.permits(level="L2", path="business/legal/x.md", tool="Read"))
+    equal("an unregistered entry grants nothing",
+          grants.for_provider({}).level, None)
+
+
+def test_asking_for_more_gives_less():
+    root = grants.for_provider(CLOUD)
+    equal("narrowing down lowers the level", root.narrow(level="L0").level, "L0")
+    equal("asking above the parent is clamped to the parent",
+          root.narrow(level="L3").level, "L1")
+    check("there is no widen", not any(
+        name for name in dir(root) if "widen" in name or "raise" in name))
+
+
+def test_a_chain_of_hops_can_only_shrink():
+    held = grants.for_provider(LOCALP).narrow(scope=["src", "docs"])
+    ranks = [providers.clearance_rank(held.level)]
+    for asked in ("L3", "L1", "L2", "L0", "L3"):
+        held = held.narrow(level=asked)
+        ranks.append(providers.clearance_rank(held.level))
+    check("every hop is no wider than the one before",
+          all(b <= a for a, b in zip(ranks, ranks[1:])), ranks)
+    equal("and five hops ended at the lowest asked", held.level, "L0")
+
+
+def test_scope_is_an_intersection():
+    held = grants.for_provider(LOCALP).narrow(scope=["src"])
+    equal("a child scope outside the parent is dropped",
+          held.narrow(scope=["business"]).scope, ())
+    equal("a child scope inside the parent is kept",
+          held.narrow(scope=["src/engine"]).scope, ("src/engine",))
+    check("an empty scope permits nothing",
+          not held.narrow(scope=[]).permits(path="src/a.py"))
+
+
+def test_scope_matches_on_path_boundaries():
+    held = grants.for_provider(LOCALP).narrow(scope=["docs"])
+    check("docs covers docs/a.md", held.permits(path="docs/a.md"))
+    check("docs does not cover docsx/a.md", not held.permits(path="docsx/a.md"))
+    check("docs covers itself", held.permits(path="docs"))
+
+
+def test_tools_are_exact():
+    held = grants.for_provider(LOCALP).narrow(tools=["Read", "Grep"])
+    check("a named tool is allowed", held.permits(tool="Grep"))
+    check("an unnamed tool is not", not held.permits(tool="Bash"))
+    equal("and narrowing again intersects",
+          held.narrow(tools=["Grep", "Bash"]).tools, ("Grep",))
+
+
+def test_a_grant_without_a_level_is_cleared_for_nothing():
+    nobody = grants.Grant(principal="stranger")
+    check("not even L0", not nobody.permits(level="L0"))
+    check("and the refusal says what it holds",
+          "nothing" in nobody.refusal(level="L0"))
+
+
+def test_expiry_is_part_of_the_grant():
+    held = grants.for_provider(LOCALP).narrow(expires="2020-01-01T00:00:00Z")
+    check("an expired grant refuses what it would otherwise allow",
+          not held.permits(level="L0"))
+    equal("and narrowing takes the earlier deadline",
+          held.narrow(expires="2030-01-01T00:00:00Z").expires,
+          "2020-01-01T00:00:00Z")
+
+
+def test_a_recorded_grant_round_trips():
+    held = grants.for_provider(LOCALP).narrow(scope=["src"], tools=["Read"])
+    equal("as_dict and from_dict agree",
+          grants.from_dict(held.as_dict()), held)
+    for bad, label in (({"principal": "x", "levl": "L1"}, "a misspelt field"),
+                       ("not an object", "a string"),
+                       ({"principal": "x", "level": "L9"}, "a level outside the set")):
+        try:
+            grants.from_dict(bad)
+            check("%s is refused" % label, False)
+        except grants.GrantError:
+            check("%s is refused" % label, True)
+
+
+def test_coerce_takes_a_grant_or_a_registry_entry():
+    held = grants.for_provider(CLOUD)
+    check("a grant passes through", grants.coerce(held) is held)
+    equal("an entry becomes its root grant",
+          grants.coerce(CLOUD).principal, "cloud")
+    try:
+        grants.coerce("cloud")
+        check("a bare string is not an authority", False)
+    except grants.GrantError:
+        check("a bare string is not an authority", True)
+
+
+def test_a_narrowed_grant_is_what_the_boundary_obeys():
+    """The hole docs/07 found: the hop, not the provider."""
+    held = grants.for_provider(LOCALP)
+    part = bundle.Part(source="business/plan.md", level="L2")
+    check("the provider's own ceiling admits it",
+          bundle.check_part(part, held))
+    try:
+        bundle.check_part(part, held.narrow(level="L1"))
+        check("the sub-task's narrowed grant refuses it", False)
+    except bundle.ClearanceError:
+        check("the sub-task's narrowed grant refuses it", True)
+    try:
+        toolguard.check({"file_path": "business/plan.md"}, "text",
+                        held.narrow(level="L1"))
+        check("and so does the return path", False)
+    except bundle.ClearanceError:
+        check("and so does the return path", True)
+
+
+# --- a capability the agent cannot mint ------------------------------------
+
+KEY = b"k" * 32
+
+
+def test_a_signed_capability_verifies():
+    held = grants.for_provider(LOCALP).narrow(scope=["src"], tools=["Read"])
+    token = capability.sign(held, KEY)
+    equal("the token carries exactly the grant",
+          capability.verify(token, KEY), held)
+
+
+def _refused(label, call):
+    try:
+        call()
+        check(label, False)
+    except capability.CapabilityError as exc:
+        check(label, True)
+        check("and the refusal does not quote the token",
+              "eyJ" not in str(exc) and "kuli1." not in str(exc))
+
+
+def test_a_capability_cannot_be_forged():
+    held = grants.for_provider(CLOUD)
+    token = capability.sign(held, KEY)
+    version, body, mac = token.split(".")
+    better = capability.sign(held.narrow(), b"j" * 32)
+    _refused("a token signed with another key is refused",
+             lambda: capability.verify(better, KEY))
+    _refused("a swapped payload is refused", lambda: capability.verify(
+        "%s.%s.%s" % (version, capability._encode(b'{"principal":"cloud",'
+                                                  b'"level":"L3","scope":["*"],'
+                                                  b'"tools":["*"],'
+                                                  b'"expires":null}'), mac), KEY))
+    _refused("a token of another shape is refused",
+             lambda: capability.verify("v9.a.b", KEY))
+
+
+def test_every_capability_expires():
+    held = grants.for_provider(CLOUD)
+    minted = capability.verify(capability.mint(held, KEY, 60), KEY)
+    check("mint sets a deadline", bool(minted.expires))
+    _refused("a lifetime of zero is refused",
+             lambda: capability.mint(held, KEY, 0))
+    stale = capability.sign(held.narrow(expires="2020-01-01T00:00:00Z"), KEY)
+    _refused("an expired capability is refused",
+             lambda: capability.verify(stale, KEY))
+
+
+def test_the_signing_key_lives_outside_the_repository(tmp):
+    inside = write(tmp, "key.txt", "x" * 40)
+    _refused("a key file inside the repository is refused",
+             lambda: capability.signing_key(tmp, {"KULI_CAPABILITY_KEY_FILE":
+                                                  str(inside)}))
+    _refused("a short key is refused",
+             lambda: capability.signing_key(tmp, {"KULI_CAPABILITY_KEY": "short"}))
+    _refused("no key at all is refused", lambda: capability.signing_key(tmp, {}))
+    equal("a long key in the environment is accepted",
+          capability.signing_key(tmp, {"KULI_CAPABILITY_KEY": "y" * 40}),
+          b"y" * 40)
+
+
+# --- fail closed on a key nobody understands -------------------------------
+
+def test_an_unknown_permission_key_is_refused(tmp):
+    cases = (
+        ('{"providrs": []}', "an unknown key in the registry document"),
+        ('{"providers": [{"id": "a", "name": "a", "shape": "raw-model",'
+         ' "adapter": "anthropic", "clearence": "L1"}]}',
+         "a misspelt clearance field"),
+        ('{"services": [{"name": "mcp://x", "transprot": "local"}]}',
+         "an unknown key on a service"),
+    )
+    for text, label in cases:
+        write(tmp, "providers.json", text)
+        try:
+            providers.registry(tmp)
+            check("%s is refused" % label, False)
+        except providers.RegistryError as exc:
+            check("%s is refused" % label, "unknown key" in str(exc))
+
+
+def test_an_unknown_config_key_is_refused(tmp):
+    write(tmp, "kuli.json", '{"tier": "A", "skipp": ["x"]}')
+    try:
+        ratchet.load_config(tmp)
+        check("a misspelt skip is refused rather than ignored", False)
+    except ratchet.ConfigError as exc:
+        check("a misspelt skip is refused rather than ignored",
+              "skipp" in str(exc))
+    check("and this repository's own config still loads",
+          ratchet.load_config(ROOT).get("tier") == "A")
+
+
+# --- the seam --------------------------------------------------------------
+
+LOCAL_SERVICE = ('{"providers": [], "services": [{"name": "mcp://audit",'
+                 ' "transport": "local", "target": "scripts/audit.js"}]}')
+
+
+def test_nothing_resolves_by_default(tmp):
+    write(tmp, "providers.json", LOCAL_SERVICE)
+    equal("a registered service resolves",
+          gateway.resolve("mcp://audit", tmp)["target"], "scripts/audit.js")
+    for name, label in (("mcp://other", "an unregistered service"),):
+        try:
+            gateway.resolve(name, tmp)
+            check("%s does not resolve" % label, False)
+        except gateway.GatewayError:
+            check("%s does not resolve" % label, True)
+
+
+def test_a_transport_this_build_cannot_honour_is_refused(tmp):
+    write(tmp, "providers.json", LOCAL_SERVICE.replace("local", "mesh"))
+    try:
+        gateway.resolve("mcp://audit", tmp)
+        check("a mesh transport is refused rather than faked", False)
+    except gateway.GatewayError as exc:
+        check("a mesh transport is refused rather than faked",
+              "not built" in str(exc))
+
+
+def test_dispatch_refuses_before_it_calls(tmp):
+    write(tmp, "providers.json", LOCAL_SERVICE)
+    held = grants.Grant(principal="cloud", level="L1", tools=("mcp://other",))
+    called = []
+    try:
+        gateway.dispatch("mcp://audit", capability.sign(held, KEY), KEY,
+                         lambda endpoint: called.append(endpoint), tmp)
+        check("a grant that does not name the service refuses", False)
+    except gateway.GatewayError:
+        check("a grant that does not name the service refuses", True)
+    equal("and the call was never made", called, [])
+
+
+def test_dispatch_judges_what_came_back(tmp):
+    write(tmp, "providers.json", LOCAL_SERVICE)
+    token = capability.sign(
+        grants.Grant(principal="cloud", level="L1", tools=("mcp://audit",)), KEY)
+    equal("a permitted call returns its result",
+          gateway.dispatch("mcp://audit", token, KEY, lambda e: "fine", tmp),
+          "fine")
+    try:
+        gateway.dispatch("mcp://audit", token, KEY,
+                         lambda e: "see business/legal/contract.md", tmp)
+        check("a result above the grant is withheld", False)
+    except bundle.ClearanceError as exc:
+        check("a result above the grant is withheld", True)
+        check("and the refusal names the path, not the content",
+              "contract.md" in str(exc) and "see business" not in str(exc))
+
+
 NEEDS_TMP = [
     test_python_measures, test_javascript_measures, test_erosion,
     test_duplication, test_skips, test_ratchet_holds_and_trips,
@@ -941,6 +1215,13 @@ NEEDS_TMP = [
     test_the_bar_cannot_move_after_work_begins,
     test_an_unfrozen_contract_does_not_count,
     test_an_unsigned_contract_cannot_be_frozen,
+    test_the_signing_key_lives_outside_the_repository,
+    test_an_unknown_permission_key_is_refused,
+    test_an_unknown_config_key_is_refused,
+    test_nothing_resolves_by_default,
+    test_a_transport_this_build_cannot_honour_is_refused,
+    test_dispatch_refuses_before_it_calls,
+    test_dispatch_judges_what_came_back,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -962,6 +1243,20 @@ NO_TMP = [
     test_the_withheld_result_is_not_quoted,
     test_a_cleared_provider_still_gets_it, test_paths_in_text,
     test_what_counts_as_a_rule_file,
+    test_a_root_grant_is_the_registry_ceiling,
+    test_asking_for_more_gives_less,
+    test_a_chain_of_hops_can_only_shrink,
+    test_scope_is_an_intersection,
+    test_scope_matches_on_path_boundaries,
+    test_tools_are_exact,
+    test_a_grant_without_a_level_is_cleared_for_nothing,
+    test_expiry_is_part_of_the_grant,
+    test_a_recorded_grant_round_trips,
+    test_coerce_takes_a_grant_or_a_registry_entry,
+    test_a_narrowed_grant_is_what_the_boundary_obeys,
+    test_a_signed_capability_verifies,
+    test_a_capability_cannot_be_forged,
+    test_every_capability_expires,
 ]
 
 

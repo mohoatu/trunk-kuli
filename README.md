@@ -250,6 +250,54 @@ Credentials are removed before anything is hashed.
 It records; it refuses nothing. See [`docs/03-trail.md`](docs/03-trail.md),
 including what it deliberately cannot do.
 
+### 6. Hand out less than you hold
+
+A clearance in a file answers *what may this model see*. It does not answer
+*what may the thing it spawned see* — and that is where authority leaks,
+because a lookup returns the same clearance to the parent and the child.
+
+A **grant** is authority as a value, and the only way to make one from another
+is `narrow`, which returns the intersection. There is no `widen`, so asking for
+more than the parent holds gives the parent's limit:
+
+```bash
+python -m kuli.cli grant --provider cloud --level L3 --scope src
+```
+
+```
+"root":     { "level": "L1", "scope": ["*"] }
+"narrowed": { "level": "L1", "scope": ["src"] }     # L3 was asked for
+```
+
+The registry sets the **ceiling**; every grant descends from an entry in it by
+narrowing. A chain of hops can only shrink.
+
+A grant in a file still has one problem: the file is in the repository, and the
+agent whose clearance it records can edit it. So a boundary accepts a
+**signature**, not a file:
+
+```bash
+export KULI_CAPABILITY_KEY_FILE=~/.kuli/key      # outside the repository
+python -m kuli.cli capability --provider cloud --level L1 --ttl 300
+python -m kuli.cli capability --verify kuli1.…
+```
+
+An agent may still rewrite `providers.json`. It cannot sign the entry it
+invented, so the edit buys it nothing until a person signs — and
+`signing_key` refuses a key file that lives inside the root it protects, since
+a key an agent can read is a key an agent can use. Every capability expires;
+one that does not is a permission, which is a different thing.
+
+Permissions also **fail closed**. A measure that cannot judge abstains; a
+permission that cannot judge refuses. An unrecognised key in `providers.json`
+or `kuli.json` is named and refused rather than ignored, because a misspelt
+`clearence` that is silently skipped is a permission nobody applied and
+everybody believed.
+
+Why this shape: [`docs/07-orchestrator.md`](docs/07-orchestrator.md), which
+reads Google's Agent Mesh against this project and says which layer a corridor
+for agents belongs in.
+
 ### Exit codes
 
 | Code | Meaning |
