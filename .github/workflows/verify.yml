@@ -69,7 +69,6 @@ jobs:
   procedure:
     name: nobody relaxed the rule judging them
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,10 +77,34 @@ jobs:
         with:
           python-version: '3.13'
 
+      # This ran on pull requests only, which made it no rule at all: the
+      # path it did not watch is the path a change takes to get to main.
+      # A pull request compares against its target branch; a push compares
+      # against the commit the branch was on before it. A new branch reports
+      # all-zeros for that, so HEAD~1 is the fallback, and a repository with
+      # one commit has nothing to compare and says so.
+      - name: What to compare against
+        id: base
+        shell: bash
+        run: |
+          pick() {
+            for candidate in "$@"; do
+              if [ -n "$candidate" ] && \
+                 git cat-file -e "$candidate^{commit}" 2>/dev/null; then
+                echo "ref=$candidate" >> "$GITHUB_OUTPUT"
+                return 0
+              fi
+            done
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          }
+          pick "${{ github.base_ref && format('origin/{0}', github.base_ref) }}" \
+               "${{ github.event.before }}" "HEAD~1"
+
       # A1: the rules and the work they judge may not change in one commit.
       # A2: a commit touching the rules carries Rules-approved-by.
       - name: kuli duties
-        run: python -m kuli.cli duties --base origin/${{ github.base_ref }}
+        if: steps.base.outputs.ref != ''
+        run: python -m kuli.cli duties --base ${{ steps.base.outputs.ref }}
 
       # Every frozen contract still matches what was agreed.
       - name: kuli contract verify
