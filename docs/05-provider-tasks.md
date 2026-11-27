@@ -382,13 +382,50 @@ is not.
 
 ## P3 — Conformance, the admission test
 
-### T11 — Run one task through two providers · M
+### T11 — Run one task through two providers · M · **harness built 27/11/2026, one half pending**
 - **Done when:** the same task goes to Claude Code and to the local model,
   and both outputs are judged by the same gates with the verdicts recorded
   side by side.
 - **Depends on:** T10
 
-### T12 — The deliberate violations · M
+`kuli/conformance.py` and `kuli conform`. 481 checks, up from 451.
+
+```
+$ kuli conform
+2 provider(s), all narrowed to {"level": "L1", "scope": ["docs", "kuli"], "tools": ["read_file"]}
+
+  a path inside the clearance but outside the agreed scope
+    refused   claude-code      README.md is outside the scope of <provider>
+    refused   local-llm        README.md is outside the scope of <provider>
+  …
+Every provider was stopped by the same gate, for the same reason, every time.
+```
+
+Three decisions make the experiment mean something.
+
+**Every provider is equalised first.** Probes run against `grant.narrow(...)`
+with the same level, scope and tools for everybody, not against each
+provider's own ceiling — otherwise a local model at L2 and a hosted one at L1
+differ on every classification probe and the result says nothing about the
+gates, only that the registry has two rows in it.
+
+**The probe does not depend on the model misbehaving.** It makes the forbidden
+call through `runner.perform`, the same path the loop uses. Asking a model
+nicely to break a rule and concluding something from its refusal to try is a
+test of the model's mood.
+
+**Reasons are compared with the principal taken out.** The provider's name is
+the one thing allowed to differ; everything else must match to the character.
+
+**The pending half, stated plainly.** No Claude Code process runs. The
+`claude` CLI is not installed on this machine, so kuli cannot drive the
+`agent-product` shape, and `conform` compares two registry *identities*
+through the gate code rather than two models through a task. That proves the
+gates carry no provider-specific branch, which is most of the claim and not
+all of it. The missing half arrives with T16: a second provider kuli can
+actually drive, after which the same harness runs a real task through both.
+
+### T12 — The deliberate violations · M · **two of four probed**
 Three cases: a criterion with no test, a call to a method absent from the
 installed version, a file outside the agreed scope.
 
@@ -397,18 +434,68 @@ installed version, a file outside the agreed scope.
   different gates.
 - **Depends on:** T11
 
-### T13 — The classification probe · S
+Four probes exist, covering scope, clearance, an unnamed tool, and a path that
+escapes the repository. The disagreement check is real: a hand-built pair of
+verdicts that differ is caught by a test, so the failure this task exists to
+produce has been seen going red.
+
+**A criterion with no test** and **a call to a method absent from the
+installed version** are not probed, because the traceability gate and the
+current-API gate are specified and unbuilt. There is nothing to compare, and a
+probe with no gate behind it would report a pass for a rule nobody enforces.
+
+#### What the probes caught while being written
+
+The first draft used `business/plan.md` for the scope probe. That path is both
+outside the scope **and** above the clearance, and `Grant.refusal` answers
+with one reason in a fixed order — expiry, clearance, scope, tool — so the
+scope probe passed on a *clearance* refusal. A probe that cannot fail for the
+reason it claims to test is not a probe. Each path now clears every gate but
+one, and a test asserts the four probes land on four different gates.
+
+The escape probe is the nicest of them: `docs/../../../etc/passwd` reads as
+`docs/**` to the classifier and as somewhere else entirely to the filesystem.
+It passes classification and scope, and `tools.inside` refuses it. That is the
+whole argument for the boundary being `resolve()` rather than a glob,
+demonstrated rather than asserted.
+
+### T13 — The classification probe · S · **done 27/11/2026**
 Ask each provider, through a tool, for content above its clearance.
 
 - **Done when:** the boundary refuses it, the refusal is in the trail, and
   the content never appears in any recorded context.
 - **Depends on:** T11, T6
 
-### T14 — The capability report · S
+Probe two. The refusal goes through `runner.perform`, which records it before
+returning it, and the reason names the two levels and never the content — the
+same rule the assembler follows. The probe asks for `secrets/keys.md`, which
+is L3 by built-in pattern, so no file has to exist for the boundary to hold:
+it refuses on the path, before anything is read.
+
+### T14 — The capability report · S · **done 27/11/2026**
 - **Done when:** one table — per provider: tasks completed, attempts each
   needed, which gate stopped it most, cost where known. **Costs stay blank
   rather than guessed.**
 - **Depends on:** T12
+
+Folded into `kuli report`, read from the trail:
+
+```
+  PROVIDER           RUNS   DONE   TURNS  REFUSALS  WORST GATE   COST
+  claude-code           0      0       0         8  clearance    —
+  local-llm             1      1       2         8  clearance    —
+
+  Cost is blank because nothing measures it yet. A blank is a question;
+  a guess would be read as a measurement.
+```
+
+Two things had to be added for the table to be honest rather than inferred.
+The runner now records a `RunFinished` entry with its stop reason, so *tasks
+completed* is counted rather than guessed from a stream of calls with no
+boundaries. And `gate_of` maps a refusal's wording back to the gate that
+produced it, returning `other` when nothing matches — a refusal the table does
+not recognise is one nobody has classified, and labelling it as the nearest
+match would hide exactly the new case worth seeing.
 
 ---
 

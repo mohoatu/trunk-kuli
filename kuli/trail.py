@@ -246,6 +246,61 @@ def per_provider(records):
     return rows
 
 
+def refusal_in(entry):
+    """The reason a step was refused, or None. Refusals are recorded, not raised."""
+    result = entry.get("result")
+    return result.get("refused") if isinstance(result, dict) else None
+
+
+def _blank_row():
+    return {"actions": 0, "turns": 0, "tool_calls": 0, "refusals": 0,
+            "runs": 0, "answered": 0, "by_gate": {},
+            "cost_usd": None, "tokens": None}
+
+
+def capability(records, gate_of):
+    """Per provider: what it did, what stopped it, and what is not known.
+
+    T14. `gate_of` is passed in rather than imported, so this module keeps
+    knowing nothing about what a refusal means — it counts them and hands the
+    sentence to somebody who does.
+
+    **Cost and tokens stay `None`.** Nothing measures them yet, and a figure
+    invented here would be read as a measurement by the next person. A blank
+    in a report is a question; a guess is a wrong answer.
+    """
+    rows = {}
+    for entry in records:
+        row = rows.setdefault(entry.get("actor", {}).get("provider", "unknown"),
+                              _blank_row())
+        row["actions"] += 1
+        _count(row, entry, gate_of)
+    return rows
+
+
+def _count(row, entry, gate_of):
+    event = entry.get("event")
+    if event == "ModelReply":
+        row["turns"] += 1
+    elif event == "PreToolUse":
+        row["tool_calls"] += 1
+    elif event == "RunFinished":
+        row["runs"] += 1
+        row["answered"] += 1 if entry.get("detail", {}).get("answered") else 0
+    reason = refusal_in(entry)
+    if reason:
+        row["refusals"] += 1
+        gate = gate_of(reason)
+        row["by_gate"][gate] = row["by_gate"].get(gate, 0) + 1
+
+
+def worst_gate(row):
+    """The gate that stopped this provider most often, or None."""
+    if not row["by_gate"]:
+        return None
+    return max(sorted(row["by_gate"]), key=lambda g: row["by_gate"][g])
+
+
 def touched(records, needle):
     """Every entry whose target mentions `needle` — who changed this file."""
     return [e for e in records if needle in (e.get("target") or "")]

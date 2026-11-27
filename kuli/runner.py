@@ -135,13 +135,28 @@ def run(task, entry, grant, root=".", config=None, steps=DEFAULT_STEPS,
                                schemas, talk)
         messages.append(reply)
         if not answers:
-            return _result(ANSWERED, reply.get("content") or "", calls, parcel)
+            return _finished(root, entry, _result(
+                ANSWERED, reply.get("content") or "", calls, parcel))
         messages.extend(answers)
         calls += len(answers)
 
-    return _result(OUT_OF_STEPS, "", calls, parcel)
+    return _finished(root, entry, _result(OUT_OF_STEPS, "", calls, parcel))
 
 
 def _result(stopped, text, calls, parcel):
     return {"stopped": stopped, "text": text, "tool_calls": calls,
             "context": list(parcel.sources), "level": parcel.max_level}
+
+
+def _finished(root, entry, outcome):
+    """Record the end of a run, so the trail knows where a task stopped.
+
+    Without this the trail is a stream of calls with no boundaries, and the
+    capability report (T14) can count actions but not tasks. A run that ended
+    is a fact worth one line.
+    """
+    _record(root, "RunFinished", entry.get("id"),
+            {"stopped": outcome["stopped"], "tool_calls": outcome["tool_calls"],
+             "answered": outcome["stopped"] == ANSWERED},
+            outcome["text"], actor_of(entry))
+    return outcome

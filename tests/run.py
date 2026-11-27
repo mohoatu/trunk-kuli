@@ -25,9 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    adapters, bundle, capability, classify, contract, duties, gateway, grants,
-    mcp, measures, providers, ratchet, redact, review_cost, runner, toolguard,
-    tools, trail,
+    adapters, bundle, capability, classify, conformance, contract, duties,
+    gateway, grants, mcp, measures, providers, ratchet, redact, review_cost,
+    runner, toolguard, tools, trail,
 )
 
 RESULTS = []
@@ -1682,8 +1682,9 @@ def test_every_call_and_result_is_in_the_trail(tmp):
 
     records = trail.entries(tmp)
     events = [e["event"] for e in records]
-    equal("the turn, the call and its result are all recorded",
-          events, ["ModelReply", "PreToolUse", "PostToolUse", "ModelReply"])
+    equal("the turn, the call, its result and the end are all recorded",
+          events, ["ModelReply", "PreToolUse", "PostToolUse", "ModelReply",
+                   "RunFinished"])
     ok, problems = trail.verify(tmp)
     check("and the chain still verifies", ok, problems)
     equal("the loop names the provider it drove, not 'unknown'",
@@ -1892,6 +1893,104 @@ def test_an_expired_grant_is_offered_nothing():
           gateway.offer(QUEUE, stale, OFFER_CONFIG), [])
 
 
+# --- the admission test ----------------------------------------------------
+
+CONFORM_CONFIG = {"classification": {"rules": [
+    {"match": "*.md", "level": "L0"},
+    {"match": "docs/**", "level": "L0"},
+]}}
+
+
+def _two_providers():
+    return [dict(RAW, id="local-llm", clearance="L2"),
+            dict(RAW, id="hosted", clearance="L1", endpoint=None)]
+
+
+def test_every_provider_is_stopped_by_the_same_gate(tmp):
+    ok, report = conformance.run(_two_providers(), tmp, CONFORM_CONFIG)
+    check("two providers, judged identically on every probe", ok, report)
+    equal("every probe refused for the reason it claims to test",
+          report["let_through"], [])
+    equal("and none was judged differently", report["judged_differently"], [])
+    equal("they were equalised first",
+          report["equalised_to"]["level"], conformance.EQUAL["level"])
+
+
+def test_each_probe_reaches_the_gate_it_names(tmp):
+    expected = ["scope", "clearance", "tool", "filesystem"]
+    found = [conformance.gate_of(
+                 list(row["by_provider"].values())[0]["reason"])
+             for row in conformance.run_all(_two_providers(), tmp,
+                                            CONFORM_CONFIG)]
+    equal("one probe per gate, and no two landing on the same one",
+          found, expected)
+
+
+def test_conformance_needs_something_to_compare(tmp):
+    ok, report = conformance.run([dict(RAW, id="only-one")], tmp,
+                                 CONFORM_CONFIG)
+    equal("one provider cannot be compared with anything", ok, None)
+    check("and it says so rather than passing", "two providers" in
+          report["error"], report)
+
+
+def test_a_gate_that_answers_differently_is_caught():
+    """The failure this whole module exists to produce."""
+    row = {"probe": "p", "by_provider": {
+        "a": {"refused": True, "right_reason": True, "reason": "x"},
+        "b": {"refused": False, "right_reason": False, "reason": ""}}}
+    equal("one refused and one did not is a disagreement",
+          len(conformance.disagreements([row])), 1)
+
+    same_verdict_other_words = {"probe": "p", "by_provider": {
+        "a": {"refused": True, "right_reason": True, "reason": "outside scope"},
+        "b": {"refused": True, "right_reason": True, "reason": "not allowed"}}}
+    equal("refused for different reasons is also a disagreement",
+          len(conformance.disagreements([same_verdict_other_words])), 1)
+
+    agreed = {"probe": "p", "by_provider": {
+        "a": {"refused": True, "right_reason": True, "reason": "same"},
+        "b": {"refused": True, "right_reason": True, "reason": "same"}}}
+    equal("identical treatment is not", conformance.disagreements([agreed]), [])
+    equal("but a wrong reason is still a failure",
+          len(conformance.failures([same_verdict_other_words])), 0)
+    equal("and letting it through certainly is",
+          len(conformance.failures([row])), 1)
+
+
+def test_the_providers_own_name_is_the_only_thing_allowed_to_differ():
+    equal("the principal is taken out before comparing",
+          conformance.anonymise("L2 is above cloud, which holds L1", "cloud"),
+          "L2 is above <provider>, which holds L1")
+    for phrase, gate in conformance.WHICH_GATE:
+        equal("%r is the %s gate" % (phrase, gate),
+              conformance.gate_of("something " + phrase + " something"), gate)
+    equal("a refusal nobody has classified is not guessed at",
+          conformance.gate_of("a brand new kind of no"), "other")
+
+
+def test_the_capability_report_counts_and_leaves_cost_blank(tmp):
+    write(tmp, "notes.md", "x\n")
+    talk, _ = _script(_wants("read_file", {"path": "notes.md"}), _says("done"))
+    runner.run(_task(), dict(RAW, id="local-llm"), _grant_for(level="L2"),
+               tmp, OFFER_CONFIG, talk=talk)
+    runner.perform({"id": "p", "name": "list_files", "arguments": {}},
+                   _grant_for(allowed=("read_file",)), tmp, OFFER_CONFIG,
+                   runner.actor_of(dict(RAW, id="local-llm")))
+
+    rows = trail.capability(trail.entries(tmp), conformance.gate_of)
+    row = rows["local-llm"]
+    equal("one run, and it was answered", (row["runs"], row["answered"]), (1, 1))
+    equal("two turns", row["turns"], 2)
+    equal("two tool calls", row["tool_calls"], 2)
+    equal("one of them refused", row["refusals"], 1)
+    equal("by the tool gate", trail.worst_gate(row), "tool")
+    equal("cost is not guessed", row["cost_usd"], None)
+    equal("neither are tokens", row["tokens"], None)
+    equal("a provider that refused nothing has no worst gate",
+          trail.worst_gate(trail._blank_row()), None)
+
+
 # --- the gates as MCP tools ------------------------------------------------
 
 def _ask(method, params=None, root=None, identifier=1):
@@ -2054,6 +2153,10 @@ NEEDS_TMP = [
     test_a_bad_line_is_skipped_not_fatal,
     test_a_second_endpoint_is_a_config_change,
     test_the_recorded_model_is_the_one_that_will_answer,
+    test_every_provider_is_stopped_by_the_same_gate,
+    test_each_probe_reaches_the_gate_it_names,
+    test_conformance_needs_something_to_compare,
+    test_the_capability_report_counts_and_leaves_cost_blank,
     test_the_registry_and_the_trail_carry_the_earned_clearance,
     test_a_two_tool_task_runs_to_an_answer,
     test_every_call_and_result_is_in_the_trail,
@@ -2101,6 +2204,8 @@ NO_TMP = [
     test_tool_calls_are_parsed_or_refused,
     test_tools_are_only_sent_when_there_are_some,
     test_the_cli_prints_what_it_was_given,
+    test_a_gate_that_answers_differently_is_caught,
+    test_the_providers_own_name_is_the_only_thing_allowed_to_differ,
     test_what_counts_as_this_machine,
     test_a_name_that_merely_resolves_here_does_not_count,
     test_a_loopback_endpoint_earns_its_clearance,

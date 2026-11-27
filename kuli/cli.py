@@ -7,6 +7,8 @@
                               should for the criteria it serves
     kuli grant                what a sub-task would hold, next to its ceiling
     kuli capability           the same grant, signed and with a deadline
+    kuli conform              every provider, asked the same forbidden things
+    kuli report               what each provider did, and what stopped it
 
 Exit code 0 means pass, 1 means a gate refused, 2 means the gate could not
 judge. A gate that cannot judge never reports success.
@@ -19,9 +21,9 @@ import sys
 from pathlib import Path
 
 from . import (
-    adapters, bundle, capability, classify, contract, duties, gateway, grants,
-    mcp, measures, providers, ratchet, review_cost, runner, toolguard, tools,
-    trail,
+    adapters, bundle, capability, classify, conformance, contract, duties,
+    gateway, grants, mcp, measures, providers, ratchet, review_cost, runner,
+    toolguard, tools, trail,
 )
 
 #: Every refusal that means *this gate could not judge, so nothing passed*.
@@ -235,8 +237,12 @@ def _add_boundary(sub):
     reg.add_argument("--init", action="store_true", help="write a starter registry")
     reg.set_defaults(func=cmd_providers)
 
-    sub.add_parser("report", help="what each provider did"
+    sub.add_parser("report", help="what each provider did, and what stopped it"
                    ).set_defaults(func=cmd_report)
+
+    sub.add_parser("conform", help="every provider, asked the same forbidden "
+                                   "things, judged the same way"
+                   ).set_defaults(func=cmd_conform)
 
     level = sub.add_parser("classify", help="how sensitive a path is, and why")
     level.add_argument("paths", nargs="+")
@@ -295,11 +301,27 @@ def cmd_providers(args):
     return 0
 
 
+CAPABILITY_ROW = "  %-16s %6s %6s %7s %9s  %-12s %s"
+
+
 def _report_row(name, row):
     print("  %-16s %6d actions  %2d tools  %s .. %s"
           % (name, row["actions"], len(row["tools"]),
              (row["first"] or "")[:10], (row["last"] or "")[:10]))
     print("%22s models: %s" % ("", ", ".join(sorted(row["models"]))))
+
+
+def _capability_table(rows):
+    """T14. Cost is printed blank rather than guessed — see trail.capability."""
+    print("\n" + CAPABILITY_ROW % ("PROVIDER", "RUNS", "DONE", "TURNS",
+                                   "REFUSALS", "WORST GATE", "COST"))
+    for name, row in sorted(rows.items()):
+        print(CAPABILITY_ROW % (name, row["runs"], row["answered"],
+                                row["turns"], row["refusals"],
+                                trail.worst_gate(row) or "—",
+                                "—" if row["cost_usd"] is None else row["cost_usd"]))
+    print("\n  Cost is blank because nothing measures it yet. A blank is a "
+          "question; a guess would be read as a measurement.")
 
 
 def _registered_ids(root):
@@ -321,7 +343,44 @@ def cmd_report(args):
     silent = sorted(_registered_ids(args.root) - set(rows))
     if silent:
         print("\n  registered but never seen: %s" % ", ".join(silent))
+    _capability_table(trail.capability(records, conformance.gate_of))
     return 0
+
+
+def _conform_row(row):
+    print("\n  %s" % row["probe"])
+    for name, verdict in sorted(row["by_provider"].items()):
+        mark = "refused" if verdict["right_reason"] else "LET THROUGH"
+        print("    %-9s %-16s %s" % (mark, name, verdict["reason"] or "—"))
+
+
+def cmd_conform(args):
+    """T11-T13. Every provider, equalised, asked the same forbidden things."""
+    entries = providers.load(args.root)
+    ok, report = conformance.run(entries, args.root,
+                                 ratchet.load_config(args.root))
+    if ok is None:
+        print(report["error"], file=sys.stderr)
+        return 2
+
+    print("%d provider(s), all narrowed to %s"
+          % (len(report["providers"]),
+             json.dumps(report["equalised_to"], sort_keys=True)))
+    for row in report["rows"]:
+        _conform_row(row)
+
+    if ok:
+        print("\nEvery provider was stopped by the same gate, for the same "
+              "reason, every time.")
+        return 0
+    for row in report["judged_differently"]:
+        print("\n  JUDGED DIFFERENTLY: %s" % row["probe"])
+        print("      A gate that answers differently per provider is not a "
+              "gate; it is a preference.")
+    for row in report["let_through"]:
+        print("\n  LET THROUGH or refused for the wrong reason: %s"
+              % row["probe"])
+    return 1
 
 
 def cmd_classify(args):
