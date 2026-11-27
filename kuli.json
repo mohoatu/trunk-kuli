@@ -2,6 +2,17 @@
   "tier": "A",
   "note": "kuli enforces everyone else's rules, so it obeys them first.",
   "skip": [],
+  "classification": {
+    "comment": "This repository is public in full, so its own paths are L0. Listed one by one on purpose: a blanket '**' rule would switch off the cautious default, and a directory added later must still arrive as L2 until somebody decides otherwise.",
+    "rules": [
+      {"match": "kuli/**", "level": "L0"},
+      {"match": "tests/**", "level": "L0"},
+      {"match": "docs/**", "level": "L0"},
+      {"match": ".github/**", "level": "L0"},
+      {"match": "*.md", "level": "L0"},
+      {"match": "*.json", "level": "L0"}
+    ]
+  },
   "allowances": {},
   "exceptions": {}
 }
