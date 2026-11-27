@@ -355,6 +355,39 @@ would be a prompt with a JSON schema.
 `CANNOT JUDGE`. A refusal is the tool working, so it is `isError: false`
 beginning `REFUSED` — an agent that treats a refusal as a crash will retry it.
 
+### 8. Talk to a model through the boundary
+
+A second model joins by being a row in `providers.json`, not by being a branch
+in the code. `kuli ask` runs one completion through a `raw-model` provider —
+and the context goes through the **real** assembler on the way:
+
+```bash
+python -m kuli.cli ask --provider local-llm --context CLAUDE.md \
+                       --prompt "summarise this in one line"
+```
+
+```
+$ python -m kuli.cli ask --provider local-llm --context .env --prompt "what is here"
+.env is L3. No provider may be given a secret in context, including one
+cleared to L3; the credential proxy injects it into the request instead.
+$ echo $?
+2
+```
+
+That refusal happens in the assembler, before a socket is opened. The adapter
+never had the choice — it receives a bundle and has no way to build one, which
+is checked by a test that reads the adapter's own source.
+
+Endpoint, model and key all come from the registry entry or from an
+environment variable it names, so reaching Ollama and reaching a hosted
+OpenAI-compatible endpoint are the same code path with two rows in the file.
+The key goes in the `Authorization` header and never into the body, the trail
+or an error message.
+
+Honest limit: this has been exercised against OpenAI-compatible endpoints over
+real HTTP, and **not yet against a real local model** — see
+[`docs/05-provider-tasks.md`](docs/05-provider-tasks.md) T7.
+
 ### Exit codes
 
 | Code | Meaning |

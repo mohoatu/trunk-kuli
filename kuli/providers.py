@@ -46,8 +46,8 @@ UNKNOWN = {"id": "unknown", "name": "unknown", "shape": None,
 #: judge; a permission may not.
 DOCUMENT_KEYS = ("_comment", "providers", "services")
 ENTRY_KEYS = ("id", "name", "shape", "adapter", "clearance", "detect",
-              "model_env", "capabilities", "cost_per_mtok", "good_for",
-              "not_for")
+              "model", "model_env", "endpoint", "endpoint_env", "api_key_env",
+              "capabilities", "cost_per_mtok", "good_for", "not_for")
 SERVICE_KEYS = ("name", "transport", "target", "note")
 
 

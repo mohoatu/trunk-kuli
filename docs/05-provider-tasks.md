@@ -82,13 +82,72 @@ Every tool *result* is classified before it re-enters a provider's context.
 No key, no bill, no vendor. Every boundary above gets exercised against a
 real model before one exists that could leak anything.
 
-### T7 — `openai_compatible` adapter, text only · M
+### T7 — `openai_compatible` adapter, text only · M · **built 27/11/2026, one half unverified**
 One call, no tools: messages in, text out.
 
 - **Done when:** it holds a conversation with a local Ollama endpoint, and
   the same code path reaches a second OpenAI-compatible endpoint with only a
   config change.
 - **Depends on:** T1, T5
+
+`kuli/adapters.py`, `urllib` only. 367 checks, up from 341, including six
+against **real HTTP servers on real sockets** rather than a patched function —
+§8.5 asks for an execution, and a mock proves the test agrees with itself.
+
+**The second half of the done-when is proven. The first is not.** There is no
+Ollama and no local model on this machine — nothing listening on 11434, 1234,
+8080, 5000, 8000 or 3000, and no `ollama` binary. So the adapter has been
+exercised against OpenAI-compatible endpoints over HTTP, which is the same
+wire contract, and **not** against a real model. That is a gap in the evidence,
+not a detail: a real model returns a different content shape when it feels
+like it, and this adapter has never been disappointed by one.
+
+To close it:
+
+```bash
+ollama serve &
+ollama pull qwen3:8b
+kuli ask --provider local-llm --prompt "say hello in five words"
+```
+
+#### What it does today, run rather than asserted
+
+```
+$ kuli ask --provider local-llm --prompt "summarise this in one line" --context CLAUDE.md
+model qwen3:8b saw 3584 system char(s) and was asked: summarise this in one line
+
+$ kuli ask --provider local-llm --prompt "what is here" --context .env
+.env is L3. No provider may be given a secret in context, including one
+cleared to L3; the credential proxy injects it into the request instead.
+$ echo $?
+2
+
+$ KULI_LOCAL_ENDPOINT=… KULI_LOCAL_MODEL=llama3.2:3b kuli ask --provider local-llm --prompt "which model are you"
+model llama3.2:3b saw 0 system char(s) and was asked: which model are you
+```
+
+The middle one is the interesting line. The refusal happens in the
+**assembler**, before a socket is opened — the adapter never had the choice.
+
+#### Where the adapter sits, which is the point of it
+
+- **It receives a bundle and cannot build one.** No assembler is imported and
+  none is called; a test reads the module's own source to keep that true. An
+  adapter that assembled its own context would decide what it may see, and the
+  classification boundary would be decoration.
+- **The bundle must have been stamped for this provider.** `assemble` writes
+  the provider id onto the bundle and `complete` refuses a bundle built for
+  anyone else — otherwise a bundle assembled for a local model cleared to L2
+  could be handed to a hosted one cleared to L1 with every gate passing on the
+  way.
+- **The key lives in the header and nowhere else.** Read from the environment
+  variable the entry names, never in the body, never in the trail, never in an
+  error message. A test asserts the key does not appear in the posted JSON.
+- **A refusal quotes nothing.** An HTTP error names the status and says the
+  response is not quoted, for the same reason a classification error does not
+  quote the content it refused.
+- **Recording belongs to the runner (T10).** An adapter that writes the record
+  of its own call is an agent logging itself.
 
 ### T8 — Local clearance is verified, not declared · S
 Loopback check and no outbound network allowance, at startup.

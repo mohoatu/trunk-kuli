@@ -15,10 +15,11 @@ judge. A gate that cannot judge never reports success.
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import (
-    bundle, capability, classify, contract, duties, gateway, grants, mcp,
-    measures, providers, ratchet, review_cost, toolguard, trail,
+    adapters, bundle, capability, classify, contract, duties, gateway, grants,
+    mcp, measures, providers, ratchet, review_cost, toolguard, trail,
 )
 
 #: Every refusal that means *this gate could not judge, so nothing passed*.
@@ -26,7 +27,8 @@ from . import (
 #: pass by a command that forgot to catch it.
 CANNOT_JUDGE = (providers.RegistryError, ratchet.ConfigError,
                 classify.ClassificationError, grants.GrantError,
-                capability.CapabilityError, gateway.GatewayError)
+                capability.CapabilityError, gateway.GatewayError,
+                adapters.AdapterError, bundle.ClearanceError)
 
 
 def _utf8():
@@ -464,6 +466,28 @@ def cmd_capability(args):
     return 0
 
 
+def _context_parts(paths, config):
+    """A part per path, levelled by the classifier, carrying the file's text."""
+    return [bundle.part_for(path, config, Path(path).read_text(encoding="utf-8"))
+            for path in paths or []]
+
+
+def cmd_ask(args):
+    """One completion through a raw-model provider.
+
+    The context goes through the real assembler, so a path above the
+    provider's clearance refuses the call rather than being trimmed.
+    """
+    entry = _resolve_provider(args)
+    if entry is None:
+        print("No provider %r in the registry." % args.provider, file=sys.stderr)
+        return 2
+    config = ratchet.load_config(args.root)
+    parcel = bundle.assemble(_context_parts(args.context, config), entry)
+    print(adapters.complete(parcel, entry, args.prompt, timeout=args.timeout))
+    return 0
+
+
 def cmd_serve(args):
     """Speak MCP on stdin and stdout, so an agent calls the gates itself."""
     return mcp.serve(args.root)
@@ -516,6 +540,13 @@ def _add_authority(sub):
                                     help="seconds the capability lives")
     made["capability"].add_argument("--verify", dest="token",
                                     help="read a token instead of issuing one")
+
+    ask = sub.add_parser("ask", help="one completion through a raw-model provider")
+    ask.add_argument("--provider", help="registry id; defaults to the active one")
+    ask.add_argument("--prompt", required=True)
+    ask.add_argument("--context", nargs="*", help="paths to put in the bundle")
+    ask.add_argument("--timeout", type=int, default=adapters.DEFAULT_TIMEOUT)
+    ask.set_defaults(func=cmd_ask)
 
 
 def build_parser():

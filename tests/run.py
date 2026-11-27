@@ -8,6 +8,7 @@ proves nothing when it passes — so the ratchet is made to trip on purpose
 here, not only to agree.
 """
 
+import http.server
 import inspect
 import io
 import json
@@ -17,13 +18,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    bundle, capability, classify, contract, duties, gateway, grants, mcp,
+    adapters, bundle, capability, classify, contract, duties, gateway, grants, mcp,
     measures, providers, ratchet, redact, review_cost, toolguard, trail,
 )
 
@@ -1272,6 +1274,162 @@ def test_dispatch_judges_what_came_back(tmp):
               "contract.md" in str(exc) and "see business" not in str(exc))
 
 
+# --- the openai_compatible adapter -----------------------------------------
+
+RAW = {"id": "local-llm", "name": "a local model", "shape": "raw-model",
+       "adapter": "openai_compatible", "clearance": "L2", "model": "qwen3:8b"}
+
+
+def _endpoint(reply="it works", status=200):
+    """A real OpenAI-compatible server on a free port.
+
+    A socket rather than a mock, because §8.5 asks for an execution and a
+    patched function proves the test agrees with itself.
+    """
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            seen.append({"path": self.path,
+                         "body": json.loads(self.rfile.read(length) or b"{}"),
+                         "auth": self.headers.get("Authorization")})
+            payload = json.dumps(
+                {"choices": [{"message": {"content": reply}}]}).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return "http://127.0.0.1:%d" % server.server_port, seen, server.shutdown
+
+
+def test_a_real_endpoint_answers_through_the_adapter():
+    url, seen, stop = _endpoint("hello from the model")
+    try:
+        entry = dict(RAW, endpoint=url)
+        parcel = bundle.assemble([bundle.Part("docs/x.md", "L0", "be brief")],
+                                 entry)
+        equal("the adapter returns the model's text",
+              adapters.complete(parcel, entry, "say hi", env={}),
+              "hello from the model")
+        call = seen[0]
+        equal("it posts to the completions path", call["path"],
+              adapters.COMPLETIONS)
+        equal("the bundle became the system message", call["body"]["messages"][0],
+              {"role": "system", "content": "be brief"})
+        equal("the prompt became the user message",
+              call["body"]["messages"][1]["content"], "say hi")
+        equal("and there is no third source of content",
+              len(call["body"]["messages"]), 2)
+        equal("no key is sent when none is configured", call["auth"], None)
+    finally:
+        stop()
+
+
+def test_a_second_endpoint_is_a_config_change(tmp):
+    """T7's done-when: the same code path, two rows in providers.json."""
+    first, _, stop_one = _endpoint("from the first")
+    second, seen, stop_two = _endpoint("from the second")
+    try:
+        write(tmp, "providers.json", json.dumps({"providers": [
+            dict(RAW, id="one", endpoint=first),
+            dict(RAW, id="two", endpoint=second, api_key_env="KULI_TEST_KEY")]}))
+        answers = [adapters.complete(bundle.assemble([], entry), entry, "hi",
+                                     env={"KULI_TEST_KEY": "sk-test"})
+                   for entry in providers.load(tmp)]
+        equal("both endpoints were reached by one code path",
+              answers, ["from the first", "from the second"])
+        equal("the key goes in the header of the entry that names it",
+              seen[0]["auth"], "Bearer sk-test")
+        check("and never into the body",
+              "sk-test" not in json.dumps(seen[0]["body"]))
+    finally:
+        stop_one()
+        stop_two()
+
+
+def test_a_bundle_for_another_provider_is_refused():
+    entry = dict(RAW, endpoint="http://127.0.0.1:1")
+    elsewhere = bundle.assemble([], dict(RAW, id="someone-else"))
+    try:
+        adapters.complete(elsewhere, entry, "hi", env={})
+        check("a bundle stamped for another provider is refused", False)
+    except adapters.AdapterError as exc:
+        check("a bundle stamped for another provider is refused", True)
+        check("and the refusal names both providers",
+              "someone-else" in str(exc) and RAW["id"] in str(exc), str(exc))
+
+
+def test_the_adapter_cannot_assemble_its_own_context():
+    source = inspect.getsource(adapters)
+    for forbidden in ("assemble(", "part_for(", "read_text(", "classify"):
+        check("the adapter never reaches for %s" % forbidden,
+              forbidden not in source)
+    check("and it refuses anything that is not already a Bundle",
+          "isinstance(parcel, Bundle)" in source)
+
+
+def test_this_adapter_refuses_work_that_is_not_its_shape():
+    wrapped = {"id": "claude-code", "name": "cc", "shape": "agent-product",
+               "adapter": "wrapped", "clearance": "L1"}
+    parcel = bundle.assemble([], wrapped)
+    for entry, label in ((wrapped, "a wrapped adapter"),
+                         (dict(wrapped, adapter="openai_compatible"),
+                          "an agent-product shape")):
+        try:
+            adapters.complete(parcel, entry, "hi", env={})
+            check("%s is refused" % label, False)
+        except adapters.AdapterError:
+            check("%s is refused" % label, True)
+
+
+def test_a_bad_answer_is_a_refusal_that_quotes_nothing():
+    url, _, stop = _endpoint("a secret in the body", status=500)
+    try:
+        entry = dict(RAW, endpoint=url)
+        adapters.complete(bundle.assemble([], entry), entry, "hi", env={})
+        check("an error status is refused", False)
+    except adapters.AdapterError as exc:
+        check("an error status is refused", True)
+        check("and the response is not quoted",
+              "a secret in the body" not in str(exc) and "not quoted" in str(exc))
+    finally:
+        stop()
+
+    for payload, label in (({}, "no choices"),
+                           ({"choices": [{"message": {}}]}, "no content")):
+        try:
+            adapters.text_from(payload)
+            check("an answer with %s is refused" % label, False)
+        except adapters.AdapterError:
+            check("an answer with %s is refused" % label, True)
+
+
+def test_the_endpoint_and_model_come_from_configuration():
+    entry = dict(RAW, endpoint="http://inline:1/", endpoint_env="KULI_TEST_URL")
+    equal("an environment variable wins over the inline value",
+          adapters.base_url(entry, {"KULI_TEST_URL": "http://env:2"}),
+          "http://env:2")
+    equal("and the inline value stands when it is unset",
+          adapters.base_url(entry, {}), "http://inline:1")
+    for broken, label in ((dict(RAW, endpoint=None), "no endpoint"),
+                          (dict(RAW, endpoint="http://x:1", model=None),
+                           "no model")):
+        try:
+            adapters.request_for(bundle.Bundle(provider_id=RAW["id"]), broken,
+                                 "hi", {})
+            check("a provider with %s is refused" % label, False)
+        except adapters.AdapterError:
+            check("a provider with %s is refused" % label, True)
+
+
 # --- filter the offer, not only the call -----------------------------------
 
 QUEUE = (
@@ -1507,6 +1665,7 @@ NEEDS_TMP = [
     test_offer_and_dispatch_cannot_disagree,
     test_the_offer_tool_takes_a_token_not_a_level,
     test_a_bad_line_is_skipped_not_fatal,
+    test_a_second_endpoint_is_a_config_change,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -1538,6 +1697,12 @@ NO_TMP = [
     test_every_withholding_says_why,
     test_a_task_is_judged_on_what_it_declares,
     test_an_expired_grant_is_offered_nothing,
+    test_a_real_endpoint_answers_through_the_adapter,
+    test_a_bundle_for_another_provider_is_refused,
+    test_the_adapter_cannot_assemble_its_own_context,
+    test_this_adapter_refuses_work_that_is_not_its_shape,
+    test_a_bad_answer_is_a_refusal_that_quotes_nothing,
+    test_the_endpoint_and_model_come_from_configuration,
     test_a_root_grant_is_the_registry_ceiling,
     test_asking_for_more_gives_less,
     test_a_chain_of_hops_can_only_shrink,
