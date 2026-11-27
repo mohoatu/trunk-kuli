@@ -408,11 +408,18 @@ Every turn and every call is recorded by the loop, in the same payload shape a
 Claude Code hook sends, so `kuli trail`, `kuli audit` and `kuli report` read
 both kinds of run through one code path.
 
-Honest limit: this has been exercised against OpenAI-compatible endpoints over
-real HTTP and against scripted replies, and **not yet against a real local
-model** — the wire contract and the gates are proven, *a real model deciding
-which tool to call* is not. See
-[`docs/05-provider-tasks.md`](docs/05-provider-tasks.md) T7 and T10.
+Verified against a real local model on 27/11/2026 — `qwen3:4b` through Ollama,
+one prompt, nothing scripted. It chose `list_files("docs")` then
+`read_file("docs/02-fleet.md")` in that order, both calls and both results
+landed in the trail as digests, and the chain verified.
+
+Its actual answer was poor: a paragraph about which file it ought to read
+instead of a summary of the one it had just read. That is the point rather
+than an embarrassment. **A harness does not make a model good; it makes the
+procedure survive one that is not.** The transcript is in
+[`docs/05-provider-tasks.md`](docs/05-provider-tasks.md) T7 and T10, along with
+the three defects the real run exposed in code the scripted tests had already
+passed.
 
 ### Exit codes
 

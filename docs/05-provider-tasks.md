@@ -82,7 +82,7 @@ Every tool *result* is classified before it re-enters a provider's context.
 No key, no bill, no vendor. Every boundary above gets exercised against a
 real model before one exists that could leak anything.
 
-### T7 — `openai_compatible` adapter, text only · M · **built 27/11/2026, one half unverified**
+### T7 — `openai_compatible` adapter, text only · M · **done 27/11/2026**
 One call, no tools: messages in, text out.
 
 - **Done when:** it holds a conversation with a local Ollama endpoint, and
@@ -94,15 +94,24 @@ One call, no tools: messages in, text out.
 against **real HTTP servers on real sockets** rather than a patched function —
 §8.5 asks for an execution, and a mock proves the test agrees with itself.
 
-**The second half of the done-when is proven. The first is not.** There is no
-Ollama and no local model on this machine — nothing listening on 11434, 1234,
-8080, 5000, 8000 or 3000, and no `ollama` binary. So the adapter has been
-exercised against OpenAI-compatible endpoints over HTTP, which is the same
-wire contract, and **not** against a real model. That is a gap in the evidence,
-not a detail: a real model returns a different content shape when it feels
-like it, and this adapter has never been disappointed by one.
+**Verified against a real model, 27/11/2026** — Ollama 0.40.18, `qwen3:4b`
+(2.5 GB) on an RTX 3050 6 GB, served from `127.0.0.1:11434`:
 
-To close it, on Windows:
+```
+$ kuli ask --provider local-llm --prompt "Say hello in exactly five words."
+Hello there how are you
+exit=0 after 18.6s
+
+$ kuli ask --provider local-llm --context %TEMP%\kuli-verify\.env --prompt "What is in this file?"
+…\.env is L3. No provider may be given a secret in context, including one
+cleared to L3; the credential proxy injects it into the request instead.
+exit=2
+```
+
+The second one is the case worth having: the refusal happens in the assembler
+and no socket is opened, with a real model sitting there ready to answer.
+
+To repeat it, on Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\verify-local-model.ps1
@@ -233,7 +242,7 @@ malformed set is refused without being quoted back — a model inventing broken
 JSON is a Tuesday, not an incident. A server that sends an object instead of a
 string also works, because some do.
 
-### T10 — The runner · M · **built 27/11/2026, with a real model still to try**
+### T10 — The runner · M · **done 27/11/2026**
 kuli's own agent loop for raw models: load context, call, dispatch tools,
 record, stop.
 
@@ -317,10 +326,57 @@ record says `unknown`.
 That second one is the project's central claim failing inside the project: the
 record of what an agent did was partly written by the agent.
 
-**Still to do.** No local model has run this. The loop has been exercised
-against scripted replies and against a real HTTP endpoint speaking the tool
-protocol, so the wire contract and the gates are proven, and *a real model
-deciding which tool to call* is not. The commands are in T7.
+**And the real run found a third, which the scripted tests could not.** The
+trail recorded `"model": "qwen3:8b"` for a run that went to `qwen3:4b`. The
+adapter resolved the model from the environment variable the entry names;
+`_resolve_provider` handed callers the registry entry **unresolved**, so the
+trail read the model out of the file. Two readings of one value, and the audit
+record took the wrong one — the same shape of defect T8 avoided by verifying
+the endpoint the call would actually use. `load()` now resolves the model
+before any caller sees an entry, and a test pins the recorded model to
+`adapters.model_name` of the same entry.
+
+No scripted test could have caught it, because a script sets both sides from
+the same place. It took a real model, an environment override, and looking at
+the trail afterwards.
+
+#### A real model, choosing its own tools — 27/11/2026
+
+`qwen3:4b`, one prompt, nothing scripted:
+
+> *"List the files in the docs directory, then read docs/02-fleet.md, then
+> tell me in one sentence what that document is for."*
+
+```
+{ "stopped": "answered", "tool_calls": 2 }
+
+$ kuli trail --last 14
+6 actions recorded
+  by tool       local-llm 2   list_files 2   read_file 2
+  by provider   local-llm 6
+
+ModelReply  local-llm                      {"model": "qwen3:4b"}
+PreToolUse  list_files                     {"prefix": "docs"}
+PostToolUse list_files                     {"output": {"bytes": 140, "lines": 8, "sha256": "2e807e0…"}}
+PreToolUse  read_file    docs/02-fleet.md  {"path": "docs/02-fleet.md"}
+PostToolUse read_file    docs/02-fleet.md  {"output": {"bytes": 13673, "lines": 266, "sha256": "62a13b1…"}}
+ModelReply  local-llm                      {"output": {"bytes": 381, …}}
+
+$ kuli audit
+6 entries, chain intact.
+```
+
+It picked `list_files("docs")`, then `read_file("docs/02-fleet.md")`, in that
+order, unprompted. Every call and every result is in the trail; results are
+stored as a size, a line count and a digest rather than as content; the
+provider is named rather than `unknown`; and the chain verifies.
+
+**The model's answer was poor.** It replied with a paragraph about which file
+it ought to read instead of summarising the one it had just read. That is
+worth writing down rather than tidying away, because it is the thesis
+arriving as evidence: the harness held perfectly while the model was mediocre.
+A harness does not make a model good. It makes the procedure survive one that
+is not.
 
 ---
 

@@ -159,10 +159,21 @@ def verified(entry, env=None):
 
 
 def as_verified(entries, env=None):
-    """Replace each declared clearance with the one it has earned."""
+    """Each entry as it will actually behave: earned clearance, real model.
+
+    `with_model` is applied here rather than left to each caller, because the
+    first time it was not, the adapter read the model from the environment and
+    the trail read it from the file — so a run against `qwen3:4b` was recorded
+    as `qwen3:8b`. An audit record naming a different model than the one that
+    answered is worse than no record: it is a confident wrong answer to the
+    only question the trail exists to settle.
+    """
+    resolved = []
     for entry in entries:
+        entry.update(with_model(entry, env))
         entry["clearance"], entry["clearance_reason"] = verified(entry, env)
-    return entries
+        resolved.append(entry)
+    return resolved
 
 
 def demoted(entries):
@@ -222,17 +233,14 @@ def active(root="."):
     chosen = os.environ.get("KULI_PROVIDER")
     for entry in entries:
         if entry["id"] == chosen or (not chosen and matches(entry)):
-            return with_model(entry)
+            return entry
     return dict(UNKNOWN)
 
 
-def with_model(entry):
+def with_model(entry, env=None):
     """Fill the model name from the environment variable the entry names."""
     resolved = dict(entry)
-    variable = entry.get("model_env")
-    if variable and os.environ.get(variable):
-        resolved["model"] = os.environ[variable]
-    resolved.setdefault("model", None)
+    resolved["model"] = setting(entry, "model", "model_env", env)
     return resolved
 
 

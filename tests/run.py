@@ -1365,6 +1365,38 @@ def test_verification_reads_the_endpoint_the_call_will_use():
           "https://api.example.com")
 
 
+def test_the_recorded_model_is_the_one_that_will_answer(tmp):
+    """Found by a real run: the trail said qwen3:8b, the request went to 4b.
+
+    The adapter resolved the model from the environment variable the entry
+    names; the registry handed callers the entry unresolved, so the trail read
+    the model out of the file. Two readings of one value, and the audit record
+    took the wrong one. A record naming a different model than the one that
+    answered is worse than no record.
+    """
+    registry(tmp, dict(GOOD, id="local", model="from-the-file",
+                       model_env="KULI_TEST_MODEL",
+                       detect={"env": "KULI_LOCAL"}))
+    env = {"KULI_TEST_MODEL": "from-the-environment"}
+    entry = providers.load(tmp, env)[0]
+    equal("the registry resolves the override",
+          entry["model"], "from-the-environment")
+    equal("and the adapter would call exactly that",
+          adapters.model_name(entry, env), entry["model"])
+
+    before = with_env(KULI_PROVIDER=None, KULI_LOCAL="1",
+                      KULI_TEST_MODEL="from-the-environment")
+    try:
+        recorded = trail.append(event(file_path="a.py"), tmp)
+    finally:
+        restore_env(before)
+    equal("so the trail records the model that answered",
+          recorded["actor"]["model"], "from-the-environment")
+
+    equal("with no override the file's value stands",
+          providers.load(tmp, {})[0]["model"], "from-the-file")
+
+
 def test_the_registry_and_the_trail_carry_the_earned_clearance(tmp):
     registry(tmp, dict(GOOD, id="hosted", clearance="L2",
                        endpoint="https://api.example.com",
@@ -2021,6 +2053,7 @@ NEEDS_TMP = [
     test_the_offer_tool_takes_a_token_not_a_level,
     test_a_bad_line_is_skipped_not_fatal,
     test_a_second_endpoint_is_a_config_change,
+    test_the_recorded_model_is_the_one_that_will_answer,
     test_the_registry_and_the_trail_carry_the_earned_clearance,
     test_a_two_tool_task_runs_to_an_answer,
     test_every_call_and_result_is_in_the_trail,

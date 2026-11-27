@@ -34,14 +34,41 @@ function Note($text) {
     $script:Lines.Add($text)
 }
 
+function Flush {
+    $script:Lines -join [Environment]::NewLine |
+        Set-Content -Path $Report -Encoding utf8
+}
+
 function Record($title, [scriptblock]$block) {
     Say $title
     Note ""
     Note "=== $title ==="
     Note ""
-    $out = (& $block 2>&1 | Out-String).TrimEnd()
-    Note $out
-    Write-Host $out
+    # Two rules this script broke on its first run, both of them rules this
+    # repository states elsewhere.
+    #
+    # A step that fails must be recorded rather than fatal. With
+    # $ErrorActionPreference = Stop, a native command writing to stderr
+    # becomes a terminating error, so `kuli ask` exiting 2 -- which is a
+    # verdict, not a crash -- killed the whole errand.
+    #
+    # And the transcript is flushed after every step. Writing it once at the
+    # end meant the first failure lost every piece of evidence gathered
+    # before it, which is the opposite of what a recorder is for.
+    try {
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $out = (& $block 2>&1 | Out-String).TrimEnd()
+        Note $out
+        Write-Host $out
+    } catch {
+        $failure = "THIS STEP FAILED: " + $_.Exception.Message
+        Note $failure
+        Write-Host $failure -ForegroundColor Yellow
+    } finally {
+        $ErrorActionPreference = $previous
+        Flush
+    }
 }
 
 function HasOllama { [bool](Get-Command ollama -ErrorAction SilentlyContinue) }
@@ -147,17 +174,26 @@ Record "the registry, and what each provider has earned" {
     python -m kuli.cli providers
 }
 
-Record "T7 - one completion through the boundary" {
-    python -m kuli.cli ask --provider local-llm --prompt "Say hello in exactly five words."
-}
+# A cold 4B model has to be loaded into VRAM before it answers a word, and
+# qwen3 reasons at length before it speaks. kuli's own default is 60 seconds,
+# which is right for a warm endpoint and far too short for the first call --
+# and a timeout here reads as "the endpoint could not be reached", which looks
+# like a kuli bug rather than a laptop.
+$slow = 300
 
-Record "T7 - a secret in the context refuses before a socket opens" {
-    python -m kuli.cli ask --provider local-llm --context $secret --prompt "What is in this file?"
+Record "T7 - one completion through the boundary" {
+    python -m kuli.cli ask --provider local-llm --timeout $slow --prompt "Say hello in exactly five words."
     "exit code: $LASTEXITCODE"
 }
 
+Record "T7 - a secret in the context refuses before a socket opens" {
+    python -m kuli.cli ask --provider local-llm --timeout $slow --context $secret --prompt "What is in this file?"
+    "exit code: $LASTEXITCODE (2 is correct here: the gate could not judge, so nothing passed)"
+}
+
 Record "T9 and T10 - the loop, with the model choosing its own tools" {
-    python -m kuli.cli run --provider local-llm --steps 6 --prompt "List the files in the docs directory, then read docs/02-fleet.md, then tell me in one sentence what that document is for."
+    python -m kuli.cli run --provider local-llm --steps 6 --timeout $slow --prompt "List the files in the docs directory, then read docs/02-fleet.md, then tell me in one sentence what that document is for."
+    "exit code: $LASTEXITCODE"
 }
 
 Record "the trail the loop wrote" { python -m kuli.cli trail --last 14 }
@@ -167,6 +203,6 @@ Remove-Item $secret -Force -ErrorAction SilentlyContinue
 
 # ---- 5. The transcript ---------------------------------------------------
 
-$script:Lines -join [Environment]::NewLine | Set-Content -Path $Report -Encoding utf8
+Flush
 Say "Written to $Report"
 Write-Host "Send that file back and T7 and T10 can be marked done." -ForegroundColor Green
