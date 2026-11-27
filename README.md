@@ -304,6 +304,10 @@ disappearing when the model changes.
 | [`docs/01-product-spec.md`](docs/01-product-spec.md) | Problem, thesis, the two halves, the gates, how portability is proven, scope, metrics, risks, open questions |
 | [`docs/02-fleet.md`](docs/02-fleet.md) | Every existing project, which gates it already has, its tier, and its gaps in order of risk |
 | [`docs/03-trail.md`](docs/03-trail.md) | The audit trail: what the agents did, recorded by something that is not them |
+| [`docs/04-providers.md`](docs/04-providers.md) | How a second or third model joins without the rules changing: two shapes, two adapters, one registry |
+| [`docs/05-provider-tasks.md`](docs/05-provider-tasks.md) | The provider work broken into steps small enough to finish and verify one at a time |
+| [`docs/06-three-agent-review.md`](docs/06-three-agent-review.md) | Separation of duties and the increment contract: two gates on the procedure rather than the work |
+| [`docs/07-orchestrator.md`](docs/07-orchestrator.md) | Google's Agent Mesh read against this project: which layer a corridor for agents belongs in, and three options |
 
 ## The first real workload
 
