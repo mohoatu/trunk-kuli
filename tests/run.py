@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
     bundle, classify, measures, providers, ratchet, redact, review_cost,
-    trail,
+    toolguard, trail,
 )
 
 RESULTS = []
@@ -668,6 +668,103 @@ def test_would_refuse_reads_nothing(tmp):
           [p for p in paths if (Path(tmp) / p).exists()], [])
 
 
+# --- the return path -------------------------------------------------------
+
+CONFIDENTIAL_TEXT = "the margin on that deal was forty-two per cent"
+
+
+def result_event(tool="Read", result="", **payload):
+    return {"tool_name": tool, "tool_input": payload,
+            "tool_response": {"stdout": result}}
+
+
+def test_a_declared_target_sets_the_level():
+    level, reason = toolguard.assess({"file_path": "docs/spec.md"}, "hi", RULES)
+    equal("a public file gives a public result", level, "L0")
+    check("and the reason names the file", "docs/spec.md" in reason, reason)
+
+    level, _ = toolguard.assess({"file_path": "business/plan.md"}, "hi", RULES)
+    equal("a confidential file gives a confidential result", level, "L2")
+
+
+def test_output_naming_a_file_raises_the_level():
+    # grep declares no target. The answer names what it found, which is the
+    # only thing that gives it away.
+    level, reason = toolguard.assess(
+        {"command": "grep -r margin ."},
+        "business/plan.md: the margin is 42%", RULES)
+    equal("a path in the output raises the level", level, "L2")
+    check("and the reason says which path", "business/plan.md" in reason, reason)
+
+
+def test_a_credential_anywhere_is_l3():
+    for text in ("TOKEN=ghp_abcdefghijklmnopqrstuvwxyz012345",
+                 "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123",
+                 "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"):
+        level, _ = toolguard.assess({"file_path": "docs/spec.md"}, text, RULES)
+        equal("a credential in the output beats a public source", level, "L3")
+
+
+def test_ordinary_output_is_internal():
+    level, _ = toolguard.assess({"command": "ls"}, "a\nb\nc", RULES)
+    equal("output with no declared source defaults to L1", level, "L1")
+    level, _ = toolguard.assess({"command": "ls"}, "a\nb\nc",
+                                dict(RULES, tool_output_default="L2"))
+    equal("a project may make that stricter", level, "L2")
+
+
+def test_the_withheld_result_is_not_quoted():
+    try:
+        toolguard.check({"file_path": "business/plan.md"}, CONFIDENTIAL_TEXT,
+                        HOSTED, RULES)
+        check("a confidential result is withheld from an L1 provider", False)
+        return
+    except bundle.ClearanceError as exc:
+        check("a confidential result is withheld from an L1 provider", True)
+        message = str(exc)
+    check("the refusal says it is withheld, not trimmed", "withheld" in message)
+    check("and never quotes the result", CONFIDENTIAL_TEXT not in message, message)
+
+
+def test_a_cleared_provider_still_gets_it():
+    level, _ = toolguard.check({"file_path": "business/plan.md"},
+                               CONFIDENTIAL_TEXT, LOCAL, RULES)
+    equal("the local model may have the same result", level, "L2")
+
+
+def test_a_refusal_is_recorded(tmp):
+    write(tmp, "kuli.json", json.dumps(RULES))
+    config = json.loads((Path(tmp) / "kuli.json").read_text(encoding="utf-8"))
+    event = result_event("Read", CONFIDENTIAL_TEXT, file_path="business/plan.md")
+
+    ok, _, message = toolguard.guard(event, HOSTED, config, tmp)
+    check("the result is refused", ok is False)
+
+    records = trail.entries(tmp)
+    equal("and one entry was written", len(records), 1)
+    equal("marked as a return-path refusal",
+          records[0]["event"], "ReturnPathRefused")
+    written = (Path(tmp) / trail.TRAIL_DIR).glob("*.jsonl")
+    body = "".join(p.read_text(encoding="utf-8") for p in written)
+    check("the trail does not hold the withheld text",
+          CONFIDENTIAL_TEXT not in body)
+    check("but it does hold the reason", "business/plan.md" in message)
+
+
+def test_an_allowed_result_is_not_recorded_as_refused(tmp):
+    event = result_event("Read", "public", file_path="docs/spec.md")
+    ok, level, _ = toolguard.guard(event, HOSTED, RULES, tmp)
+    check("it is allowed", ok is True)
+    equal("at the file's level", level, "L0")
+    equal("and nothing was written as a refusal", len(trail.entries(tmp)), 0)
+
+
+def test_paths_in_text():
+    found = toolguard.paths_mentioned("see a/b.md and a/b.md and c/d.py now")
+    equal("paths are found and deduplicated", found, ["a/b.md", "c/d.py"])
+    equal("prose with no path finds none", toolguard.paths_mentioned("hello"), [])
+
+
 # --- the suite itself ------------------------------------------------------
 
 def test_cli_runs():
@@ -690,7 +787,8 @@ NEEDS_TMP = [
     test_registry_absent_means_none, test_registry_refuses_what_it_cannot_trust,
     test_detection, test_starter_never_overwrites,
     test_trail_records_the_registered_provider, test_per_provider_rows,
-    test_would_refuse_reads_nothing,
+    test_would_refuse_reads_nothing, test_a_refusal_is_recorded,
+    test_an_allowed_result_is_not_recorded_as_refused,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -706,6 +804,11 @@ NO_TMP = [
     test_above_clearance_is_refused, test_one_bad_part_refuses_the_whole_bundle,
     test_secrets_never_enter_a_bundle, test_an_unknown_provider_gets_nothing,
     test_there_is_no_way_to_soften_it, test_a_part_needs_a_real_level,
+    test_a_declared_target_sets_the_level,
+    test_output_naming_a_file_raises_the_level,
+    test_a_credential_anywhere_is_l3, test_ordinary_output_is_internal,
+    test_the_withheld_result_is_not_quoted,
+    test_a_cleared_provider_still_gets_it, test_paths_in_text,
 ]
 
 

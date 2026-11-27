@@ -66,7 +66,7 @@ provider whose clearance is lower **raises**; it never drops content.
   code path downgrades anything.
 - **Depends on:** T4
 
-### T6 — The return-path check · M
+### T6 — The return-path check · M · **done 27/11/2026**
 Every tool *result* is classified before it re-enters a provider's context.
 
 - **Done when:** a test has an L1 provider request a file resolving to L2
@@ -324,3 +324,52 @@ Adding this tripped the ratchet twice — `cmd_bundle` at complexity 12, then
 
 **Next:** T6 — the return-path check. Every tool *result* classified again
 before it re-enters a context. The leak people forget.
+
+---
+
+## T6 as built — 27/11/2026
+
+`kuli guard` reads the same payload `record` does, so it sits on PostToolUse
+beside it. Exit 1 means the result is withheld. **173 checks**, up from 149.
+
+```
+$ echo '{"tool_name":"Bash","tool_input":{"command":"grep -r margin ."},
+         "tool_response":{"stdout":"business/plan.md: the margin is 42%"}}' \
+  | kuli guard --provider claude-code
+
+a L2 result may not go back to 'claude-code', cleared to L1: the output names
+business/plan.md, which is L2. The result is withheld, not trimmed.
+```
+
+Four rules decide a result's level, highest wins:
+
+1. **Anything shaped like a credential is L3**, whatever its origin — so a
+   secret printed by `env` is caught even though `env` reads no file.
+2. **A path named in the tool's input** gives the result that path's level.
+   The exact case, and the common one.
+3. **A path mentioned in the output** raises it. This is the one that earns
+   its keep: `grep -r thing business/` declares no target, and the answer
+   naming what it found is the only thing that gives it away.
+4. Otherwise the result is **internal**, not confidential.
+
+### Rule 4 is the weak one, and it is written down as such
+
+Tool output with no identifiable source is not a classified artefact — it was
+produced inside the owner's environment. Defaulting it to L2 would refuse
+every `ls` to a hosted provider, which is precisely how a gate earns being
+switched off (constitution risk 1). The protection against being wrong here
+is rules 1 and 3, not the default, and `tool_output_default` in `kuli.json`
+moves it for a project that wants to be stricter.
+
+Saying which of four rules is the soft one seemed better than letting someone
+discover it.
+
+### A refusal that leaves no trace never happened
+
+Every withheld result is written to the trail as `ReturnPathRefused` before
+the refusal is raised — and a test asserts the withheld text appears neither
+in the message nor in the trail. The record holds *that* something was
+refused and *why*, never the thing itself.
+
+**Next:** T7 — the `openai_compatible` adapter, text only, against a local
+model. The first time any of this faces something that is not a test.

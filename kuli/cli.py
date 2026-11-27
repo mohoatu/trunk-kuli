@@ -14,7 +14,10 @@ import argparse
 import json
 import sys
 
-from . import bundle, classify, measures, providers, ratchet, review_cost, trail
+from . import (
+    bundle, classify, measures, providers, ratchet, review_cost, toolguard,
+    trail,
+)
 
 
 def _utf8():
@@ -204,6 +207,10 @@ def _add_boundary(sub):
     bun.add_argument("--provider", help="registry id; defaults to the active one")
     bun.set_defaults(func=cmd_bundle)
 
+    grd = sub.add_parser("guard", help="judge a tool result on its way back")
+    grd.add_argument("--provider", help="registry id; defaults to the active one")
+    grd.set_defaults(func=cmd_guard)
+
 
 ROW = "%-16s %-14s %-18s %-9s %s"
 
@@ -308,6 +315,32 @@ def cmd_bundle(args):
                    for part, why in bundle.would_refuse(args.paths, running, config))
     _print_verdicts(args.paths, refused, config)
     return 1 if refused else 0
+
+
+def cmd_guard(args):
+    """Judge one tool result before it goes back into a context.
+
+    Reads the same payload `record` does, so it can sit on PostToolUse
+    alongside it. Exit 1 means the result is withheld.
+    """
+    try:
+        event = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        print("guard: unreadable payload", file=sys.stderr)
+        return 2
+
+    running = _resolve_provider(args)
+    if running is None:
+        print("No provider %r in the registry." % args.provider, file=sys.stderr)
+        return 2
+
+    ok, level, reason = toolguard.guard(
+        event, running, ratchet.load_config(args.root), args.root)
+    if ok:
+        print("allowed (%s) — %s" % (level, reason))
+        return 0
+    print(reason, file=sys.stderr)
+    return 1
 
 
 def build_parser():
