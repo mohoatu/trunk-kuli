@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="1200" height="520" role="img" aria-label="The boundary: providers.json, verified clearance, Grant.narrow, capability, bundle.assemble, adapter, the model, and toolguard on the way back">
+
+  <rect x="0" y="0" width="1200" height="520" fill="#ffffff"/>
+
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+
+    <text x="40" y="42" font-size="25" font-weight="700" fill="#1f2328">The boundary — what a model is allowed to see</text>
+    <text x="40" y="68" font-size="15" fill="#656d76">Every step refuses. None of them trims, summarises or downgrades.</text>
+
+    <rect x="40" y="96" width="250" height="96" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="60" y="128" font-size="17" font-weight="600" fill="#0969da">providers.json</text>
+    <text x="60" y="152" font-size="13.5" fill="#656d76">the clearance a person</text>
+    <text x="60" y="172" font-size="13.5" fill="#656d76">wrote down, by hand</text>
+
+    <rect x="320" y="96" width="250" height="96" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="340" y="128" font-size="17" font-weight="600" fill="#0969da">verified()</text>
+    <text x="340" y="152" font-size="13.5" fill="#656d76">loopback, or demoted</text>
+    <text x="340" y="172" font-size="13.5" fill="#656d76">to L1 and told why</text>
+
+    <rect x="600" y="96" width="250" height="96" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="620" y="128" font-size="17" font-weight="600" fill="#0969da">Grant.narrow()</text>
+    <text x="620" y="152" font-size="13.5" fill="#656d76">intersection only.</text>
+    <text x="620" y="172" font-size="13.5" fill="#656d76">there is no widen</text>
+
+    <rect x="880" y="96" width="250" height="96" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="900" y="128" font-size="17" font-weight="600" fill="#0969da">capability</text>
+    <text x="900" y="152" font-size="13.5" fill="#656d76">hmac-signed outside</text>
+    <text x="900" y="172" font-size="13.5" fill="#656d76">the repo. always expires</text>
+
+    <path d="M 290 144 H 307" stroke="#0969da" stroke-width="2" fill="none"/><polygon points="314,144 305,139 305,149" fill="#0969da"/>
+    <path d="M 570 144 H 587" stroke="#0969da" stroke-width="2" fill="none"/><polygon points="594,144 585,139 585,149" fill="#0969da"/>
+    <path d="M 850 144 H 867" stroke="#0969da" stroke-width="2" fill="none"/><polygon points="874,144 865,139 865,149" fill="#0969da"/>
+
+    <path d="M 1005 192 V 226 H 165 V 283" stroke="#0969da" stroke-width="2" fill="none"/><polygon points="165,291 160,282 170,282" fill="#0969da"/>
+
+    <rect x="40" y="296" width="250" height="110" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="60" y="328" font-size="17" font-weight="600" fill="#0969da">bundle.assemble()</text>
+    <text x="60" y="352" font-size="13.5" fill="#656d76">refuses a part above</text>
+    <text x="60" y="372" font-size="13.5" fill="#656d76">the clearance. L3 never</text>
+    <text x="60" y="392" font-size="13.5" fill="#656d76">enters a context at all</text>
+
+    <rect x="320" y="296" width="250" height="110" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="340" y="328" font-size="17" font-weight="600" fill="#0969da">adapter</text>
+    <text x="340" y="352" font-size="13.5" fill="#656d76">openai_compatible,</text>
+    <text x="340" y="372" font-size="13.5" fill="#656d76">or a wrapped product.</text>
+    <text x="340" y="392" font-size="13.5" fill="#656d76">it cannot build a bundle</text>
+
+    <rect x="600" y="296" width="250" height="110" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="620" y="328" font-size="17" font-weight="600" fill="#0969da">the model</text>
+    <text x="620" y="352" font-size="13.5" fill="#656d76">local or hosted.</text>
+    <text x="620" y="372" font-size="13.5" fill="#656d76">it only ever receives</text>
+    <text x="620" y="392" font-size="13.5" fill="#656d76">a bundle, never a path</text>
+
+    <rect x="880" y="296" width="250" height="110" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+    <text x="900" y="328" font-size="17" font-weight="600" fill="#0969da">toolguard.check()</text>
+    <text x="900" y="352" font-size="13.5" fill="#656d76">the return path. the</text>
+    <text x="900" y="372" font-size="13.5" fill="#656d76">result is classified again:</text>
+    <text x="900" y="392" font-size="13.5" fill="#656d76">the model chose the path</text>
+
+    <path d="M 290 350 H 307" stroke="#0969da" stroke-width="2" fill="none"/><polygon points="314,350 305,345 305,355" fill="#0969da"/>
+    <path d="M 570 350 H 587" stroke="#0969da" stroke-width="2" fill="none"/><polygon points="594,350 585,345 585,355" fill="#0969da"/>
+    <path d="M 850 350 H 867" stroke="#0969da" stroke-width="2" fill="none"/><polygon points="874,350 865,345 865,355" fill="#0969da"/>
+
+    <path d="M 1005 296 V 262 H 725 V 283" stroke="#cf222e" stroke-width="2" fill="none" stroke-dasharray="6 4"/><polygon points="725,291 720,282 730,282" fill="#cf222e"/>
+    <text x="742" y="256" font-size="13.5" font-weight="600" fill="#cf222e">withheld, or handed back — never trimmed</text>
+
+    <text x="40" y="452" font-size="13.5" fill="#656d76">Written outside all of it: the trail. Append-only, hash-chained, holding a size and a digest of what passed, never the bytes.</text>
+    <text x="40" y="476" font-size="13.5" fill="#656d76">A refusal is recorded before it is raised, because a refusal nobody can see is the same as a result that never existed.</text>
+
+  </g>
+</svg>

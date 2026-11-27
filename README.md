@@ -83,9 +83,28 @@ by the local model; **secrets are readable by no model at all** — a credential
 proxy injects them, so a model that never sees a secret cannot leak one.
 Unclassified defaults to confidential, and only a human may ever lower a level.
 
+![The boundary: providers.json, verified clearance, Grant.narrow, capability,
+bundle.assemble, the adapter, the model, and toolguard on the way
+back](docs/boundary.svg)
+
+Read it left to right, then down. The registry is where a person writes a
+clearance; everything after it either carries that decision or refuses. The red
+line is the half that is easy to forget: a model does not leak by reading its
+prompt, it leaks by **calling a tool** and having the answer put back in front
+of it, after the bundle was built.
+
 **Portable discipline.** Nine gates — spec, traceability, test, current-API,
 standard, absence, scope, classification, evidence — each a program, none of
 them a prompt.
+
+![The gates: ratchet, review-cost, spec and traceability and test on the work;
+contract and duties on the procedure; kuli serve; exit codes 0, 1 and
+2](docs/gates.svg)
+
+The top row judges **the work**. The second row judges **the procedure** — who
+was allowed to say yes, and whether the bar was agreed before the work or after
+seeing the result. Those are the two ways a correct-looking gate still produces
+a wrong answer, and no amount of measuring the code catches either.
 
 The current-API gate is the one worth describing. The requirement is that the
 model must not write code from the stale API it remembers from training, and
@@ -480,6 +499,8 @@ disappearing when the model changes.
 | [`docs/06-three-agent-review.md`](docs/06-three-agent-review.md) | Separation of duties and the increment contract: two gates on the procedure rather than the work |
 | [`docs/07-orchestrator.md`](docs/07-orchestrator.md) | Google's Agent Mesh read against this project: which layer a corridor for agents belongs in, and three options |
 | [`docs/08-neighbours.md`](docs/08-neighbours.md) | Two Vietnamese products working the adjacent halves of the problem, and the four things worth taking from them |
+| [`docs/boundary.svg`](docs/boundary.svg) · [`docs/gates.svg`](docs/gates.svg) | The two diagrams above, as files |
+| [`scripts/verify-local-model.ps1`](scripts/verify-local-model.ps1) | Installs a local model and runs the boundary and the loop against it, writing a transcript |
 
 ## The first real workload
 
@@ -496,18 +517,31 @@ without it. Nothing else counts as done.
 
 ## Status
 
-**Built and running: the two ratchet gates, and the audit trail.** `measure`,
-`baseline`, `ratchet`, `review-cost`, `record`, `trail` and `audit`, covering
-Python and JavaScript. 69 checks on Linux and Windows across Python 3.10 and
-3.13, and the suite makes the ratchet trip and the trail detect tampering on
-purpose rather than only watching them agree — a check nobody has seen go red
-is not known to work. kuli is measured by its own ratchet in its own CI, and
-paid for the trail with a refactor when adding it tripped that ratchet.
+**451 checks**, on Linux and Windows across Python 3.10 and 3.13, with no
+dependencies and a CI job that fails if a dependency manifest ever appears.
+The suite makes the ratchet trip and the trail detect tampering **on purpose**
+rather than only watching them agree — a check nobody has seen go red is not
+known to work. kuli is measured by its own ratchet in its own CI, and has paid
+for six additions with a refactor rather than an exception.
 
-**Specified, not yet built:** the classified local brain, the credential
-proxy, provider adapters, the other seven gates, the night/approval-window
-split, cross-provider review, the conformance suite, and the corridor — rules
-that actually refuse an agent's action rather than only recording it.
+**Built and running.** The measures and the ratchet; `review-cost`; the
+append-only trail and its audit; the provider registry with earned clearances;
+classification, bundles and the return-path check; grants, capabilities and the
+gateway; separation of duties and the increment contract; the read-only MCP
+surface; the `openai_compatible` adapter, the two tools and the runner.
+
+**Verified against a real local model on 27/11/2026** — `qwen3:4b` through
+Ollama. It chose its own tools, every call and result landed in the trail as a
+digest, and the chain verified. Its answer was mediocre, which is the point: a
+harness does not make a model good, it makes the procedure survive one that is
+not.
+
+**Specified, not yet built:** the classified local brain as a file store, the
+credential proxy and egress boundary, five of the nine gates (spec,
+traceability, test, current-API, standard, absence, scope, evidence are
+specified; two are built), the night and approval-window split, cross-provider
+review, the conformance suite, and the corridor — rules that refuse an agent's
+action rather than only recording it.
 
 Nine open questions are recorded rather than guessed; two of them shape the
 architecture and are answered before more code.
@@ -528,6 +562,17 @@ architecture and are answered before more code.
 - **Recording a command is not constraining it.** The trail writes down
   `rm -rf`; it does not stop it.
 - **Cost and token figures are not recorded yet.**
+- **A loopback endpoint says where a request goes, not where the model
+  forwards it.** So L2 today means *addressed to this machine*, which is
+  weaker than *cannot leave it*. The second half needs the egress proxy.
+- **`offer` is silent in a project with no `classification` rules**, because
+  unclassified means L2 and an L1 provider is then offered nothing that
+  declares a path. That is the cautious default working, and it means the
+  gate says nothing useful until a project writes its rules down.
+- **A task is judged on what it declares.** One that names no paths is judged
+  on its service alone; the gate cannot classify what it was not told about.
+- **The two tools are read-only.** Nothing in the runner writes, moves,
+  deletes or executes.
 
 ## Where it comes from
 
