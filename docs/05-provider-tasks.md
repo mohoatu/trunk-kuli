@@ -102,13 +102,30 @@ wire contract, and **not** against a real model. That is a gap in the evidence,
 not a detail: a real model returns a different content shape when it feels
 like it, and this adapter has never been disappointed by one.
 
-To close it:
+To close it, on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verify-local-model.ps1
+```
+
+[`scripts/verify-local-model.ps1`](../scripts/verify-local-model.ps1) installs
+Ollama if it is missing, keeps the model files off the system drive, pulls a
+model small enough to fit in 6 GB of VRAM, runs T7's two cases and T9/T10's
+loop against it, and writes a transcript. It is a one-off errand kept in the
+repository so that the gap is closable by anyone rather than by whoever read
+this paragraph.
+
+The equivalent by hand:
 
 ```bash
 ollama serve &
-ollama pull qwen3:8b
+ollama pull qwen3:4b
 kuli ask --provider local-llm --prompt "say hello in five words"
 ```
+
+A 4B model is deliberate. The question here is whether the adapter, the
+boundary and the loop hold, not how good the model is — and a loop that
+survives a small model changing its mind survives a large one.
 
 #### What it does today, run rather than asserted
 
