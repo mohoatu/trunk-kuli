@@ -15,8 +15,8 @@ import json
 import sys
 
 from . import (
-    bundle, classify, measures, providers, ratchet, review_cost, toolguard,
-    trail,
+    bundle, classify, contract, duties, measures, providers, ratchet,
+    review_cost, toolguard, trail,
 )
 
 
@@ -212,6 +212,17 @@ def _add_boundary(sub):
     grd.set_defaults(func=cmd_guard)
 
 
+def _add_procedure(sub):
+    dut = sub.add_parser("duties", help="nobody relaxed the rule judging them")
+    dut.add_argument("--base", required=True, help="git ref to compare against")
+    dut.set_defaults(func=cmd_duties)
+
+    con = sub.add_parser("contract", help="the bar, agreed before the work")
+    con.add_argument("action", choices=("new", "check", "freeze", "verify"))
+    con.add_argument("slug", nargs="?")
+    con.set_defaults(func=cmd_contract)
+
+
 ROW = "%-16s %-14s %-18s %-9s %s"
 
 
@@ -343,6 +354,72 @@ def cmd_guard(args):
     return 1
 
 
+def cmd_duties(args):
+    try:
+        ok, report = duties.run(args.base, args.root)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print("%d commit(s) since %s, %d touching the rules"
+          % (report["commits"], report["base"], report["touching_rules"]))
+    if ok:
+        print("Nobody relaxed a rule that was judging them.")
+        return 0
+    for record, problems in report["faults"]:
+        print("\n  %s" % record["commit"])
+        for problem in problems:
+            print("      %s" % problem)
+    return 1
+
+
+def _contract_report(results):
+    for slug, ok, message in results:
+        print("  %-7s %s" % ("ok" if ok else "FAIL", message))
+
+
+def cmd_contract(args):
+    try:
+        return _contract_action(args)
+    except contract.ContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _contract_new(args):
+    print("Wrote %s" % contract.create(args.slug, args.root))
+    return 0
+
+
+def _contract_freeze(args):
+    print("Frozen: %s" % contract.freeze(args.slug, args.root))
+    return 0
+
+
+def _contract_check(args):
+    ok, _, problems = contract.check(args.slug, args.root)
+    print("%s is %s" % (args.slug, "signed off" if ok else "not ready"))
+    for problem in problems:
+        print("      %s" % problem)
+    return 0 if ok else 1
+
+
+def _contract_verify(args):
+    if args.slug:
+        results = [(args.slug,) + contract.verify(args.slug, args.root)]
+    else:
+        results = contract.verify_all(args.root)[1]
+    _contract_report(results)
+    return 0 if all(r[1] for r in results) else 1
+
+
+CONTRACT_ACTIONS = {"new": _contract_new, "freeze": _contract_freeze,
+                    "check": _contract_check, "verify": _contract_verify}
+
+
+def _contract_action(args):
+    return CONTRACT_ACTIONS[args.action](args)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="kuli", description=__doc__)
     parser.add_argument("--root", default=".", help="repository root")
@@ -350,6 +427,7 @@ def build_parser():
     _add_gates(sub)
     _add_trail(sub)
     _add_boundary(sub)
+    _add_procedure(sub)
     return parser
 
 

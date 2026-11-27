@@ -18,7 +18,7 @@ project exists to prevent.
 import json
 from pathlib import Path
 
-from . import measures
+from . import measures, paths
 
 BASELINE_PATH = Path(".kuli/baseline.json")
 CONFIG_PATH = Path("kuli.json")
@@ -42,8 +42,7 @@ def load_baseline(root="."):
 
 
 def write_baseline(root=".", data=None):
-    path = Path(root) / BASELINE_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = paths.ensure_parent(Path(root) / BASELINE_PATH)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8")
     return path

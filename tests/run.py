@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    bundle, classify, measures, providers, ratchet, redact, review_cost,
-    toolguard, trail,
+    bundle, classify, contract, duties, measures, providers, ratchet,
+    redact, review_cost, toolguard, trail,
 )
 
 RESULTS = []
@@ -765,6 +765,149 @@ def test_paths_in_text():
     equal("prose with no path finds none", toolguard.paths_mentioned("hello"), [])
 
 
+# --- separation of duties --------------------------------------------------
+
+def git_in(tmp, *args):
+    subprocess.run(["git"] + list(args), cwd=tmp, check=True,
+                   capture_output=True, text=True)
+
+
+def a_repo(tmp):
+    git_in(tmp, "init", "-q", "-b", "main")
+    git_in(tmp, "config", "user.email", "t@example.com")
+    git_in(tmp, "config", "user.name", "T")
+    write(tmp, "app.py", "x = 1\n")
+    write(tmp, "kuli.json", "{}\n")
+    git_in(tmp, "add", "-A")
+    git_in(tmp, "commit", "-qm", "initial")
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_work_alone_is_fine(tmp):
+    base = a_repo(tmp)
+    write(tmp, "app.py", "x = 2\n")
+    git_in(tmp, "commit", "-qam", "a feature")
+    ok, report = duties.run(base, tmp)
+    check("a commit touching no rule file passes", ok, report)
+    equal("and none were touched", report["touching_rules"], 0)
+
+
+def test_rules_and_work_together_are_refused(tmp):
+    base = a_repo(tmp)
+    write(tmp, "app.py", "x = 2\n")
+    write(tmp, "kuli.json", '{"allowances": {"python": {"erosion": 1}}}\n')
+    git_in(tmp, "add", "-A")
+    git_in(tmp, "commit", "-qm", "a feature and a tweak")
+
+    ok, report = duties.run(base, tmp)
+    check("mixing the rules with the work is refused", not ok)
+    problems = report["faults"][0][1]
+    check("A1 is named", any(p.startswith("A1") for p in problems), problems)
+    check("and it says to split them",
+          any("Split them" in p for p in problems), problems)
+
+
+def test_rules_alone_still_need_a_second_actor(tmp):
+    base = a_repo(tmp)
+    write(tmp, "kuli.json", '{"allowances": {"python": {"erosion": 1}}}\n')
+    git_in(tmp, "commit", "-qam", "relax erosion")
+
+    ok, report = duties.run(base, tmp)
+    check("a lone rule change with no approver is refused", not ok)
+    problems = report["faults"][0][1]
+    check("A2 is named", any(p.startswith("A2") for p in problems), problems)
+    check("and A1 is not, since nothing else was touched",
+          not any(p.startswith("A1") for p in problems), problems)
+
+
+def test_an_approved_rule_change_passes(tmp):
+    base = a_repo(tmp)
+    write(tmp, "kuli.json", '{"allowances": {"python": {"erosion": 1}}}\n')
+    git_in(tmp, "commit", "-qam", "relax erosion\n\nRules-approved-by: The Owner")
+    ok, _ = duties.run(base, tmp)
+    check("a lone, approved rule change passes", ok)
+
+
+def test_what_counts_as_a_rule_file():
+    for path in ("kuli.json", ".kuli/baseline.json", "providers.json",
+                 ".github/workflows/verify.yml"):
+        check("%s is a rule file" % path, duties.is_rule_file(path))
+    for path in ("kuli/measures.py", "README.md", "docs/01.md"):
+        check("%s is not" % path, not duties.is_rule_file(path))
+
+
+# --- the increment contract ------------------------------------------------
+
+def a_contract(tmp, producer="", reviewer="", slug="thing"):
+    """A contract on disk, signed as asked. Returns its slug."""
+    contract.create(slug, tmp)
+    if producer or reviewer:
+        path = contract.path_for(slug, tmp)
+        text = path.read_text(encoding="utf-8")
+        text = text.replace("Producer-signed:", "Producer-signed: " + producer)
+        text = text.replace("Reviewer-signed:", "Reviewer-signed: " + reviewer)
+        path.write_text(text, encoding="utf-8")
+    return slug
+
+
+def test_an_unsigned_contract_is_not_ready(tmp):
+    a_contract(tmp)
+    ok, _, problems = contract.check("thing", tmp)
+    check("a fresh contract is not ready", not ok)
+    # `\\s` matches a newline, so an empty "Producer-signed:" once swallowed
+    # the line below and reported the reviewer as the producer.
+    check("both signatures are reported empty, not just one",
+          len([p for p in problems if "is empty" in p]) == 2, problems)
+
+
+def test_the_producer_may_not_be_the_reviewer(tmp):
+    a_contract(tmp, "claude-code", "claude-code")
+    ok, _, problems = contract.check("thing", tmp)
+    check("signing both sides is refused", not ok)
+    check("and the reason is the point of the rule",
+          any("own bar" in p for p in problems), problems)
+
+
+def test_a_signed_contract_is_ready(tmp):
+    a_contract(tmp, "claude-code", "local")
+    ok, parsed, problems = contract.check("thing", tmp)
+    check("two different signatures are enough", ok, problems)
+    equal("the producer is read", parsed["producer"], "claude-code")
+    equal("and the reviewer", parsed["reviewer"], "local")
+
+
+def test_the_bar_cannot_move_after_work_begins(tmp):
+    a_contract(tmp, "claude-code", "local")
+    contract.freeze("thing", tmp)
+
+    ok, message = contract.verify("thing", tmp)
+    check("an untouched contract verifies", ok, message)
+
+    path = contract.path_for("thing", tmp)
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "the conditions", "only the easy conditions"), encoding="utf-8")
+    ok, message = contract.verify("thing", tmp)
+    check("editing it afterwards is caught", not ok)
+    check("and the message says why", "is not a bar" in message, message)
+
+
+def test_an_unfrozen_contract_does_not_count(tmp):
+    a_contract(tmp, "claude-code", "local")
+    ok, message = contract.verify("thing", tmp)
+    check("never frozen is not the same as unchanged", not ok)
+    check("and it says what to run", "freeze" in message, message)
+
+
+def test_an_unsigned_contract_cannot_be_frozen(tmp):
+    a_contract(tmp)
+    try:
+        contract.freeze("thing", tmp)
+        check("freezing an unsigned contract is refused", False)
+    except contract.ContractError:
+        check("freezing an unsigned contract is refused", True)
+
+
 # --- the suite itself ------------------------------------------------------
 
 def test_cli_runs():
@@ -789,6 +932,15 @@ NEEDS_TMP = [
     test_trail_records_the_registered_provider, test_per_provider_rows,
     test_would_refuse_reads_nothing, test_a_refusal_is_recorded,
     test_an_allowed_result_is_not_recorded_as_refused,
+    test_work_alone_is_fine, test_rules_and_work_together_are_refused,
+    test_rules_alone_still_need_a_second_actor,
+    test_an_approved_rule_change_passes,
+    test_an_unsigned_contract_is_not_ready,
+    test_the_producer_may_not_be_the_reviewer,
+    test_a_signed_contract_is_ready,
+    test_the_bar_cannot_move_after_work_begins,
+    test_an_unfrozen_contract_does_not_count,
+    test_an_unsigned_contract_cannot_be_frozen,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -809,6 +961,7 @@ NO_TMP = [
     test_a_credential_anywhere_is_l3, test_ordinary_output_is_internal,
     test_the_withheld_result_is_not_quoted,
     test_a_cleared_provider_still_gets_it, test_paths_in_text,
+    test_what_counts_as_a_rule_file,
 ]
 
 

@@ -27,7 +27,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import providers, redact
+from . import paths, providers, redact
 
 TRAIL_DIR = Path(".kuli/trail")
 HEAD_FILE = TRAIL_DIR / "HEAD"
@@ -57,8 +57,7 @@ def read_head(root):
 
 
 def write_head(root, value):
-    path = Path(root) / HEAD_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = paths.ensure_parent(Path(root) / HEAD_FILE)
     path.write_text(value + "\n", encoding="utf-8")
 
 
@@ -138,8 +137,7 @@ def append(event, root="."):
     body["prev"] = previous
     body["hash"] = digest(body, previous)
 
-    path = day_file(root, body["ts"])
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = paths.ensure_parent(day_file(root, body["ts"]))
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(body, sort_keys=True) + "\n")
     write_head(root, body["hash"])

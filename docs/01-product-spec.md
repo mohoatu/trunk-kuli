@@ -244,6 +244,30 @@ against a **fixed written checklist** — specification conformance, security,
 error handling, test coverage, use of current APIs. The checklist is a file in
 the repository, not something the reviewing model invents.
 
+### Nobody accepts their own work, and nobody moves their own bar
+
+Two rules sit underneath the review above, because a reviewer is no use if
+the party being reviewed can change the rules or the bar.
+
+**Separation of duties.** The actor that produced a change may not be the
+actor that accepts it, and may not be the only actor behind a change to the
+rules themselves — `kuli.json`, the baseline, the registry, CI. With a single
+provider the second actor is the owner, which is the same principle as "only
+a person may lower a classification level", applied to the rules rather than
+the data. §8.3's `CLAUDE.md` warning against widening an exclusion was a
+prompt until this existed.
+
+**The increment contract.** Before work starts, a contract states what will
+be built and how it will be judged; the producer writes it and the reviewer
+accepts it. Its digest is recorded when work begins, and an acceptance whose
+contract changed afterwards is refused. A bar that can be edited once the
+result is known is not a bar.
+
+The contract matters most where tests are written by the same party as the
+code: both come from one reading of the request, so if the reading was wrong
+the test encodes the error as faithfully as the code. Green then means the
+two agree with each other, not that either is right.
+
 ### The rule that keeps this from being theatre
 
 > **A disagreement is never settled by models voting.**
@@ -276,6 +300,8 @@ non-zero. No model takes part in the decision.
 | **Absence gate** | A forbidden symbol, dependency or pattern appeared |
 | **Scope gate** | Files were touched that the agreed plan did not name |
 | **Classification gate** | Content above a principal's clearance was about to enter its context |
+| **Separation of duties** | The rules and the work they judge changed together, or the rules changed with no second actor |
+| **Contract gate** | An increment has no contract signed by two actors, or its contract changed after work began |
 | **Evidence gate** | `evidence/` is older than the code it claims to describe |
 
 ### 8.1 The current-API gate

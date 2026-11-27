@@ -66,6 +66,27 @@ jobs:
           if [ "${code:-0}" = "1" ]; then exit 1; fi
           exit 0
 
+  procedure:
+    name: nobody relaxed the rule judging them
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # A1: the rules and the work they judge may not change in one commit.
+      # A2: a commit touching the rules carries Rules-approved-by.
+      - name: kuli duties
+        run: python -m kuli.cli duties --base origin/${{ github.base_ref }}
+
+      # Every frozen contract still matches what was agreed.
+      - name: kuli contract verify
+        run: python -m kuli.cli contract verify
+
   no-dependencies:
     name: the dependency list is still empty
     runs-on: ubuntu-latest
