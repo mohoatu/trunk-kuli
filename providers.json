@@ -22,6 +22,27 @@
       },
       "good_for": [],
       "not_for": []
+    },
+    {
+      "id": "local-llm",
+      "name": "a local OpenAI-compatible model",
+      "shape": "raw-model",
+      "adapter": "openai_compatible",
+      "clearance": "L1",
+      "endpoint": "http://127.0.0.1:11434",
+      "endpoint_env": "KULI_LOCAL_ENDPOINT",
+      "model": "qwen3:8b",
+      "model_env": "KULI_LOCAL_MODEL",
+      "capabilities": {
+        "tool_calling": false,
+        "parallel_tool_calls": false,
+        "context_tokens": null
+      },
+      "cost_per_mtok": { "in": 0, "out": 0 },
+      "good_for": [],
+      "not_for": [
+        "L2 work, until T8 verifies the endpoint is actually loopback. A local model is the thing that should hold L2, and declaring it before anything checks is exactly what T8 exists to stop."
+      ]
     }
   ]
 }
