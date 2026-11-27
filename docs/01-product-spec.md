@@ -183,6 +183,22 @@ key this version does not understand is named and refused rather than ignored,
 because a misspelt `clearence` that is silently skipped is a permission nobody
 applied and everybody believed.
 
+### 5.1.3 A clearance above L1 is earned, not declared
+
+Added **27/11/2026** (T8). L2 means *only this model may see confidential
+content*, which is true only if the model runs on this machine. So a registry
+entry declaring above L1 must show a **loopback endpoint**, verified against
+the value the call will actually use; one that cannot is **demoted to L1 with
+a reason**, rather than disabled or trusted. Demotion only ever lowers, and
+the earned level is what the assembler, the return-path check and the trail
+all see.
+
+`localhost` and `*.localhost` pass without a lookup; any other name is refused
+even if it resolves to 127.0.0.1, because a DNS answer is not a property of an
+address. The other half — that the process cannot send anywhere else — is not
+checkable from inside it and waits for the egress proxy, so L2 today means
+*addressed to this machine*, which is weaker than *cannot leave it*.
+
 ### 5.2 Irreversible actions
 
 The harness prepares; a person confirms. It never sends mail, pushes to a

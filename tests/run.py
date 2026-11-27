@@ -343,8 +343,11 @@ def test_trail_survives_an_odd_payload(tmp):
 
 # --- the registry ----------------------------------------------------------
 
+#: Carries a loopback endpoint on purpose: since T8, a clearance above L1 is
+#: demoted unless the entry can show the model runs on this machine.
 GOOD = {"id": "x", "name": "X", "shape": "raw-model",
-        "adapter": "openai_compatible", "clearance": "L2"}
+        "adapter": "openai_compatible", "clearance": "L2",
+        "endpoint": "http://127.0.0.1:11434"}
 
 
 def registry(tmp, *entries):
@@ -1274,6 +1277,85 @@ def test_dispatch_judges_what_came_back(tmp):
               "contract.md" in str(exc) and "see business" not in str(exc))
 
 
+# --- a clearance above L1 is shown, not declared ---------------------------
+
+LOOPBACK = ("http://127.0.0.1:11434", "http://localhost:1234",
+            "http://[::1]:8080", "http://127.0.0.5:99",
+            "http://ollama.localhost:11434", "127.0.0.1:11434")
+
+ELSEWHERE = ("http://10.0.0.4:11434", "https://api.example.com",
+             "http://ollama.local:11434", "http://0.0.0.0:11434", "")
+
+
+def test_what_counts_as_this_machine():
+    for url in LOOPBACK:
+        check("%s is this machine" % url, providers.is_loopback(url))
+    for url in ELSEWHERE:
+        check("%r is not" % url, not providers.is_loopback(url))
+
+
+def test_a_name_that_merely_resolves_here_does_not_count():
+    """A DNS answer is not a property of the address."""
+    check("ollama.local is refused even though it may point at 127.0.0.1",
+          not providers.is_loopback("http://ollama.local:11434"))
+    check("while the reserved name is accepted without a lookup",
+          providers.is_loopback("http://anything.localhost:11434"))
+
+
+def test_a_loopback_endpoint_earns_its_clearance():
+    level, reason = providers.verified(dict(GOOD, clearance="L2"), {})
+    equal("L2 stands for a model on this machine", level, "L2")
+    check("and the reason names the host", "127.0.0.1" in reason, reason)
+
+
+def test_an_endpoint_elsewhere_is_demoted_and_says_so():
+    for url, label in ((None, "no endpoint at all"),
+                       ("https://api.example.com", "a hosted endpoint")):
+        entry = dict(GOOD, clearance="L2", endpoint=url)
+        level, reason = providers.verified(entry, {})
+        equal("%s is demoted to L1" % label, level, "L1")
+        check("and the reason says demoted", "demoted" in reason, reason)
+    top, reason = providers.verified(dict(GOOD, clearance="L3", endpoint=None), {})
+    equal("L3 is demoted to the ceiling, not one step", top, "L1")
+
+
+def test_a_low_clearance_is_never_raised():
+    for declared in ("L0", "L1"):
+        level, reason = providers.verified(
+            dict(GOOD, clearance=declared, endpoint="http://127.0.0.1:1"), {})
+        equal("%s needs no proof and is left alone" % declared, level, declared)
+        check("and nothing was demoted", "demoted" not in reason, reason)
+
+
+def test_verification_reads_the_endpoint_the_call_will_use():
+    """Checking the inline value while calling the environment one is theatre."""
+    entry = dict(GOOD, clearance="L2", endpoint="http://127.0.0.1:11434",
+                 endpoint_env="KULI_TEST_URL")
+    level, _ = providers.verified(entry, {"KULI_TEST_URL": "https://api.example.com"})
+    equal("the environment override is what gets verified", level, "L1")
+    equal("and the adapter would call the same host",
+          adapters.base_url(entry, {"KULI_TEST_URL": "https://api.example.com"}),
+          "https://api.example.com")
+
+
+def test_the_registry_and_the_trail_carry_the_earned_clearance(tmp):
+    registry(tmp, dict(GOOD, id="hosted", clearance="L2",
+                       endpoint="https://api.example.com",
+                       detect={"env": "KULI_HOSTED"}))
+    entries = providers.load(tmp, {})
+    equal("load returns the earned level", entries[0]["clearance"], "L1")
+    equal("and one provider is reported as demoted",
+          len(providers.demoted(entries)), 1)
+
+    before = with_env(KULI_PROVIDER=None, KULI_HOSTED="1")
+    try:
+        entry = trail.append(event(file_path="a.py"), tmp)
+        equal("the trail records the earned clearance, not the declared one",
+              entry["actor"]["clearance"], "L1")
+    finally:
+        restore_env(before)
+
+
 # --- the openai_compatible adapter -----------------------------------------
 
 RAW = {"id": "local-llm", "name": "a local model", "shape": "raw-model",
@@ -1666,6 +1748,7 @@ NEEDS_TMP = [
     test_the_offer_tool_takes_a_token_not_a_level,
     test_a_bad_line_is_skipped_not_fatal,
     test_a_second_endpoint_is_a_config_change,
+    test_the_registry_and_the_trail_carry_the_earned_clearance,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -1697,6 +1780,12 @@ NO_TMP = [
     test_every_withholding_says_why,
     test_a_task_is_judged_on_what_it_declares,
     test_an_expired_grant_is_offered_nothing,
+    test_what_counts_as_this_machine,
+    test_a_name_that_merely_resolves_here_does_not_count,
+    test_a_loopback_endpoint_earns_its_clearance,
+    test_an_endpoint_elsewhere_is_demoted_and_says_so,
+    test_a_low_clearance_is_never_raised,
+    test_verification_reads_the_endpoint_the_call_will_use,
     test_a_real_endpoint_answers_through_the_adapter,
     test_a_bundle_for_another_provider_is_refused,
     test_the_adapter_cannot_assemble_its_own_context,

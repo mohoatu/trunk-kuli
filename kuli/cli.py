@@ -243,6 +243,8 @@ def _print_registry(entries, running):
         mark = "<- running" if entry["id"] == running["id"] else ""
         print(ROW % (entry["id"], entry["clearance"], entry["shape"],
                      entry["adapter"], mark))
+    for entry in providers.demoted(entries):
+        print("\n  %s: %s" % (entry["id"], entry["clearance_reason"]))
     if running["id"] == "unknown":
         print("\nNone of them is detected in this process. Actions recorded "
               "now will say 'unknown', which is the honest answer.")

@@ -149,13 +149,58 @@ The middle one is the interesting line. The refusal happens in the
 - **Recording belongs to the runner (T10).** An adapter that writes the record
   of its own call is an agent logging itself.
 
-### T8 — Local clearance is verified, not declared · S
+### T8 — Local clearance is verified, not declared · S · **done 27/11/2026**
 Loopback check and no outbound network allowance, at startup.
 
 - **Done when:** a local provider configured with a non-loopback endpoint
   **is demoted to L1 and says so**, rather than being disabled or silently
   trusted.
 - **Depends on:** T1, T7
+
+`providers.verified(entry)` returns the clearance an entry has **earned** and
+the reason. `load()` applies it, so every consumer — the assembler, the
+return-path check, the trail — sees the earned level and not the declared one.
+396 checks, up from 367.
+
+The rule: **a clearance above L1 must be shown.** L2 means *only this model
+may see confidential content*, which is true only if the model runs here, and
+the cheap evidence for that is a loopback endpoint. An entry that cannot show
+one is demoted to L1 with a reason, rather than disabled — which would make
+the harness unusable — or trusted, which is the failure this exists to
+prevent.
+
+Three decisions inside it.
+
+**A name that merely resolves here does not count.** `localhost` and
+`*.localhost` are reserved for the loopback interface by RFC 6761, so they
+pass without a lookup. Any other name is refused even if it resolves to
+127.0.0.1 today: a DNS answer is not a property of the address, and a
+clearance that depends on a lookup is one that changes without anybody editing
+anything.
+
+**Verification reads the endpoint the call will actually use.** The effective
+value comes from `endpoint_env` when that variable is set, so
+`providers.setting` is shared with the adapter. Checking the inline endpoint
+while the request went to the one in the environment would be theatre, and a
+test pins the two to the same host.
+
+**Demotion only lowers.** L0 and L1 need no proof and are returned untouched;
+L3 without a loopback endpoint is demoted to the ceiling, L1, not one step.
+
+```
+$ kuli providers
+ID               CLEARANCE      SHAPE              ADAPTER
+local-llm        L1             raw-model          openai_compatible
+
+  local-llm: declared L2, demoted to L1: https://api.example.com is not a
+             loopback address
+```
+
+**Half of T8, honestly.** *No outbound network allowance* cannot be checked
+from inside the process — a loopback endpoint says where the request goes, not
+where the model forwards it. That half waits for the egress proxy in T15, and
+until then L2 here means *addressed to this machine*, which is weaker than
+*cannot leave it*.
 
 ### T9 — Tool calling · M
 Tool definitions out, tool calls back, results in — through T6 on the way

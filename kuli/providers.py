@@ -25,11 +25,21 @@ and the commands say so — a guessed provider in an audit trail is worse than
 an honest gap.
 """
 
+import ipaddress
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REGISTRY_PATH = Path("providers.json")
+
+#: A clearance above this must be **shown**, not declared. L1 is what an
+#: endpoint nobody has verified is worth: it may be anywhere, so treat it as
+#: somewhere else. See T8 in docs/05-provider-tasks.md.
+UNVERIFIED_CEILING = "L1"
+
+#: Names that mean this machine without a DNS lookup.
+LOOPBACK_NAMES = ("localhost",)
 
 #: Lowest to highest. A provider may see its own level and below.
 CLEARANCES = ("L0", "L1", "L2", "L3")
@@ -83,9 +93,85 @@ def registry(root="."):
     return data
 
 
-def load(root="."):
-    """Every registered provider. An absent file means none, not a default."""
-    return registry(root).get("providers", [])
+def setting(entry, direct, variable, env=None):
+    """A setting, from the environment variable the entry names or inline.
+
+    Here rather than in the adapter because **verification has to read the
+    same value the call will use.** If clearance were checked against the
+    inline endpoint while the request went to the one in the environment, the
+    check would be decoration.
+    """
+    env = env if env is not None else os.environ
+    name = entry.get(variable)
+    found = env.get(name) if name else None
+    return found or entry.get(direct)
+
+
+def host_of(url):
+    text = url or ""
+    parsed = urlsplit(text if "//" in text else "//" + text)
+    return (parsed.hostname or "").lower()
+
+
+def is_loopback(url):
+    """Whether this endpoint is certainly on this machine.
+
+    An IP literal is decided arithmetically. `localhost` and `*.localhost` are
+    reserved for the loopback interface by RFC 6761, so they count. **Any other
+    name does not**, even one that resolves to 127.0.0.1 today: a DNS answer is
+    not a property of the address, and a clearance that depends on a lookup is
+    a clearance that changes without anybody editing anything.
+    """
+    host = host_of(url)
+    if not host:
+        return False
+    if host in LOOPBACK_NAMES or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def verified(entry, env=None):
+    """The clearance this entry has earned, and why. Never raises one.
+
+    L2 means *only this model may see confidential content*, which is true
+    only if the model runs here. The cheap evidence for that is a loopback
+    endpoint. A provider that cannot show one is **demoted and says so**,
+    rather than being disabled, which would make the harness unusable, or
+    silently trusted, which is the failure this exists to prevent.
+
+    Half of T8 is here. The other half — that the process has no outbound
+    network allowance — cannot be checked from inside it and waits for the
+    egress proxy in T15.
+    """
+    declared = entry.get("clearance")
+    if clearance_rank(declared) <= clearance_rank(UNVERIFIED_CEILING):
+        return declared, "declared %s, which needs no proof" % declared
+    url = setting(entry, "endpoint", "endpoint_env", env)
+    if is_loopback(url):
+        return declared, ("%s stands: %s is on this machine"
+                          % (declared, host_of(url)))
+    return UNVERIFIED_CEILING, (
+        "declared %s, demoted to %s: %s is not a loopback address"
+        % (declared, UNVERIFIED_CEILING, url or "no endpoint is configured"))
+
+
+def as_verified(entries, env=None):
+    """Replace each declared clearance with the one it has earned."""
+    for entry in entries:
+        entry["clearance"], entry["clearance_reason"] = verified(entry, env)
+    return entries
+
+
+def demoted(entries):
+    return [e for e in entries if "demoted" in (e.get("clearance_reason") or "")]
+
+
+def load(root=".", env=None):
+    """Every registered provider, at the clearance each has earned."""
+    return as_verified(registry(root).get("providers", []), env)
 
 
 def _check_one(entry, seen):

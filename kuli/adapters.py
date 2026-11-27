@@ -43,6 +43,7 @@ import urllib.error
 import urllib.request
 
 from .bundle import Bundle
+from .providers import setting
 
 ADAPTER = "openai_compatible"
 SHAPE = "raw-model"
@@ -54,16 +55,8 @@ class AdapterError(Exception):
     """A call that will not be made, or an answer that cannot be read."""
 
 
-def _from_entry(entry, direct, variable, env):
-    """A setting, from the environment variable the entry names or inline."""
-    name = entry.get(variable)
-    found = env.get(name) if name else None
-    return found or entry.get(direct)
-
-
 def base_url(entry, env=None):
-    env = env if env is not None else os.environ
-    url = _from_entry(entry, "endpoint", "endpoint_env", env)
+    url = setting(entry, "endpoint", "endpoint_env", env)
     if not url:
         raise AdapterError(
             "provider %r has no endpoint. Set one in providers.json, or name "
@@ -72,8 +65,7 @@ def base_url(entry, env=None):
 
 
 def model_name(entry, env=None):
-    env = env if env is not None else os.environ
-    name = _from_entry(entry, "model", "model_env", env)
+    name = setting(entry, "model", "model_env", env)
     if not name:
         raise AdapterError("provider %r names no model" % entry.get("id"))
     return name
