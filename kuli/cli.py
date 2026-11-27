@@ -14,6 +14,7 @@ judge. A gate that cannot judge never reports success.
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,9 +34,35 @@ CANNOT_JUDGE = (providers.RegistryError, ratchet.ConfigError,
                 tools.ToolError)
 
 
+#: What `chcp 65001` sets. Named because the number means nothing on sight.
+WINDOWS_UTF8 = 65001
+
+
+def _windows_console_utf8():
+    """Tell the console it is being sent UTF-8, as well as sending it.
+
+    Reconfiguring the stream was only half the job: the stream then emits
+    UTF-8 bytes, and a Windows console still decoding them as its legacy code
+    page prints `ΓÇö` where an em dash was. Both ends have to agree.
+
+    Failures are swallowed on purpose. There may be no console at all — this
+    runs under a pipe in CI and under `kuli serve` — and a report that cannot
+    set a code page is still a correct report.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(WINDOWS_UTF8)
+        ctypes.windll.kernel32.SetConsoleCP(WINDOWS_UTF8)
+    except Exception:  # noqa: BLE001 - see the docstring
+        pass
+
+
 def _utf8():
     """The reports contain names from Vietnamese repositories; cp1252 cannot
     print them, and a console error must not look like a failing gate."""
+    _windows_console_utf8()
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")

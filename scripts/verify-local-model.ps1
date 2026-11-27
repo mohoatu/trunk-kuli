@@ -71,6 +71,13 @@ function PortOpen($port) {
 $env:NO_PROXY  = "127.0.0.1,localhost"
 $env:no_proxy  = $env:NO_PROXY
 
+# kuli sends UTF-8. PowerShell 5.1 decodes a child process's output using the
+# console's legacy code page unless told otherwise, so an em dash arrives as
+# `ΓÇö` and is written into the transcript that way — the mojibake happens
+# here, in the capture, not in the program that produced it.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 # ---- 1. Ollama ------------------------------------------------------------
 
 if (-not (HasOllama)) {

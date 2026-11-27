@@ -1278,6 +1278,32 @@ def test_dispatch_judges_what_came_back(tmp):
               "contract.md" in str(exc) and "see business" not in str(exc))
 
 
+# --- the console gets what it can read -------------------------------------
+
+#: An em dash and Vietnamese diacritics: the two things that came out as
+#: mojibake on a Windows console while the stream itself was correct.
+AWKWARD = "docs/kế-hoạch—2026.md"
+
+
+def test_the_cli_prints_what_it_was_given():
+    """A report is wrong if the console cannot render it.
+
+    Reconfiguring the stream to UTF-8 was half the job; a Windows console
+    still decoding as its legacy code page printed `ΓÇö` for an em dash. This
+    runs the CLI as a subprocess so the Windows leg of the matrix is the one
+    that would fail, which is the only place the bug existed.
+    """
+    done = subprocess.run(
+        [sys.executable, "-m", "kuli.cli", "classify", AWKWARD],
+        cwd=str(ROOT), capture_output=True)
+    check("the command succeeds", done.returncode == 0,
+          done.stderr[:300].decode("utf-8", errors="replace"))
+    text = done.stdout.decode("utf-8", errors="replace")
+    check("the path comes back intact", AWKWARD in text, text)
+    for mojibake in ("ΓÇö", "â€”", "�"):
+        check("and carries no %r" % mojibake, mojibake not in text, text)
+
+
 # --- a clearance above L1 is shown, not declared ---------------------------
 
 LOOPBACK = ("http://127.0.0.1:11434", "http://localhost:1234",
@@ -2041,6 +2067,7 @@ NO_TMP = [
     test_a_tool_schema_is_what_the_model_expects,
     test_tool_calls_are_parsed_or_refused,
     test_tools_are_only_sent_when_there_are_some,
+    test_the_cli_prints_what_it_was_given,
     test_what_counts_as_this_machine,
     test_a_name_that_merely_resolves_here_does_not_count,
     test_a_loopback_endpoint_earns_its_clearance,
