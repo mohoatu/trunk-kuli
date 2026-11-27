@@ -356,6 +356,7 @@ disappearing when the model changes.
 | [`docs/05-provider-tasks.md`](docs/05-provider-tasks.md) | The provider work broken into steps small enough to finish and verify one at a time |
 | [`docs/06-three-agent-review.md`](docs/06-three-agent-review.md) | Separation of duties and the increment contract: two gates on the procedure rather than the work |
 | [`docs/07-orchestrator.md`](docs/07-orchestrator.md) | Google's Agent Mesh read against this project: which layer a corridor for agents belongs in, and three options |
+| [`docs/08-neighbours.md`](docs/08-neighbours.md) | Two Vietnamese products working the adjacent halves of the problem, and the four things worth taking from them |
 
 ## The first real workload
 

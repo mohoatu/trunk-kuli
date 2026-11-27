@@ -284,10 +284,15 @@ Three things follow.
 first act will not be to make us break a rule to satisfy it. The violation stays
 visible here instead.
 
-**The CI job did not fire**, because it runs only on `pull_request` and this went
-straight to `main`. That is the gate's real weakness, not the bootstrap: a rule
-enforced on one path and not the other is enforced on neither. Worth deciding
-whether `duties` should also run on push.
+**The CI job did not fire**, because it ran only on `pull_request` and this went
+straight to `main`. That was the gate's real weakness, not the bootstrap: a
+rule enforced on one path and not the other is enforced on neither. **Fixed
+27/11/2026** — the `procedure` job now runs on push as well, comparing against
+`github.event.before` there and against the target branch on a pull request,
+falling back to `HEAD~1` on a new branch and abstaining when there is nothing
+to compare. The commit that made that change touched only the workflow and
+carried a `Rules-approved-by:` trailer, which is the gate's own prescription
+followed rather than argued with.
 
 **`.github/workflows/` may be too broad for `RULE_FILES`.** Any commit that adds
 a workflow beside code now trips A1 — which is right for a workflow that *relaxes*
