@@ -8,8 +8,10 @@ proves nothing when it passes — so the ratchet is made to trip on purpose
 here, not only to agree.
 """
 
+import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,7 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    classify, measures, providers, ratchet, redact, review_cost, trail,
+    bundle, classify, measures, providers, ratchet, redact, review_cost,
+    trail,
 )
 
 RESULTS = []
@@ -559,6 +562,112 @@ def test_bundle_level_is_the_highest_part():
     equal("unknown levels are ignored", classify.highest(["L9", "L1"]), "L1")
 
 
+# --- the bundle, and the refusal -------------------------------------------
+
+HOSTED = {"id": "hosted", "clearance": "L1"}
+LOCAL = {"id": "local", "clearance": "L2"}
+TOP = {"id": "top", "clearance": "L3"}
+STRANGER = {"id": "stranger", "clearance": None}
+
+SECRET_TEXT = "the quarterly figure nobody outside may read"
+
+
+def test_a_cleared_bundle_assembles():
+    parts = [bundle.Part("docs/a.md", "L0", "public text"),
+             bundle.Part("notes.md", "L1", "internal text")]
+    built = bundle.assemble(parts, HOSTED)
+    equal("the bundle knows its provider", built.provider_id, "hosted")
+    equal("and carries every part", len(built.parts), 2)
+    equal("its level is the highest part's", built.max_level, "L1")
+    check("and its text is the parts joined", "internal text" in built.text())
+
+
+def test_an_empty_bundle_has_no_level():
+    equal("nothing in it means no level", bundle.assemble([], HOSTED).max_level, None)
+
+
+def test_above_clearance_is_refused():
+    part = bundle.Part("business/plan.md", "L2", SECRET_TEXT)
+    try:
+        bundle.assemble([part], HOSTED)
+        check("an L2 part is refused for an L1 provider", False, "it was allowed")
+        return
+    except bundle.ClearanceError as exc:
+        check("an L2 part is refused for an L1 provider", True)
+        message = str(exc)
+
+    check("the refusal names the part", "business/plan.md" in message, message)
+    check("and both levels", "L2" in message and "L1" in message, message)
+    check("and says the content is not downgraded", "not downgraded" in message)
+    # An error message is a log line. A log line that quotes confidential text
+    # is the leak arriving by another door.
+    check("and never quotes the content it refused", SECRET_TEXT not in message)
+
+
+def test_one_bad_part_refuses_the_whole_bundle():
+    parts = [bundle.Part("docs/a.md", "L0"), bundle.Part("business/b.md", "L2")]
+    try:
+        bundle.assemble(parts, HOSTED)
+        check("a single over-level part stops the bundle", False)
+    except bundle.ClearanceError:
+        check("a single over-level part stops the bundle", True)
+
+
+def test_secrets_never_enter_a_bundle():
+    part = bundle.Part("config/.env", "L3", "API_KEY=xyz")
+    for provider in (HOSTED, LOCAL, TOP):
+        try:
+            bundle.assemble([part], provider)
+            check("L3 refused for a provider cleared to %s" % provider["clearance"],
+                  False, "it was allowed")
+        except bundle.ClearanceError as exc:
+            check("L3 refused for a provider cleared to %s" % provider["clearance"],
+                  True)
+            check("and the reason is the proxy, not the clearance",
+                  "proxy" in str(exc), str(exc))
+
+
+def test_an_unknown_provider_gets_nothing():
+    try:
+        bundle.assemble([bundle.Part("README.md", "L0")], STRANGER)
+        check("a provider with no clearance is refused even L0", False)
+    except bundle.ClearanceError:
+        check("a provider with no clearance is refused even L0", True)
+
+
+def test_there_is_no_way_to_soften_it():
+    parameters = list(inspect.signature(bundle.assemble).parameters)
+    equal("assemble takes only parts and a provider", parameters, ["parts", "provider"])
+    check("no parameter offers to truncate, redact or downgrade",
+          not any(word in p.lower() for p in parameters
+                  for word in ("trunc", "redact", "downgrade", "force", "allow")))
+    source = inspect.getsource(bundle)
+    # `(?!=)` matters: `part.level ==` is a comparison, not an assignment, and
+    # the first version of this check could not tell them apart.
+    check("and the module never assigns a part a different level",
+          re.search(r"part\.level\s*=(?!=)", source) is None)
+
+
+def test_a_part_needs_a_real_level():
+    try:
+        bundle.Part("a.md", "L9")
+        check("a part with an invented level is refused", False)
+    except bundle.ClearanceError:
+        check("a part with an invented level is refused", True)
+
+
+def test_would_refuse_reads_nothing(tmp):
+    write(tmp, "kuli.json", json.dumps(RULES))
+    config = json.loads((Path(tmp) / "kuli.json").read_text(encoding="utf-8"))
+    paths = ["docs/spec.md", "business/plan.md", ".env"]
+    refused = bundle.would_refuse(paths, HOSTED, config)
+    equal("two of the three are refused for an L1 provider", len(refused), 2)
+    sources = {part.source for part, _ in refused}
+    equal("and they are the right two", sources, {"business/plan.md", ".env"})
+    equal("none of the paths had to exist",
+          [p for p in paths if (Path(tmp) / p).exists()], [])
+
+
 # --- the suite itself ------------------------------------------------------
 
 def test_cli_runs():
@@ -581,6 +690,7 @@ NEEDS_TMP = [
     test_registry_absent_means_none, test_registry_refuses_what_it_cannot_trust,
     test_detection, test_starter_never_overwrites,
     test_trail_records_the_registered_provider, test_per_provider_rows,
+    test_would_refuse_reads_nothing,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -592,6 +702,10 @@ NO_TMP = [
     test_dotfiles_are_not_mangled, test_windows_separators,
     test_glob_translation, test_bad_rules_are_refused,
     test_bundle_level_is_the_highest_part,
+    test_a_cleared_bundle_assembles, test_an_empty_bundle_has_no_level,
+    test_above_clearance_is_refused, test_one_bad_part_refuses_the_whole_bundle,
+    test_secrets_never_enter_a_bundle, test_an_unknown_provider_gets_nothing,
+    test_there_is_no_way_to_soften_it, test_a_part_needs_a_real_level,
 ]
 
 

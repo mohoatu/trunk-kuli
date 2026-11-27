@@ -57,7 +57,7 @@ Given a path, return its level: from `kuli.json`, from defaults, and
   at all resolves to L2 rather than L0.
 - **Depends on:** nothing
 
-### T5 — Bundle, and the assembler that refuses · M
+### T5 — Bundle, and the assembler that refuses · M · **done 27/11/2026**
 A `Bundle` carries parts and the highest level among them. Building one for a
 provider whose clearance is lower **raises**; it never drops content.
 
@@ -268,3 +268,59 @@ thing for this module to fumble, and it fumbled the most common one.
 
 Found by running the command on real paths rather than on the paths the tests
 had been written around. `test_dotfiles_are_not_mangled` now pins it.
+
+
+---
+
+## T5 as built — 27/11/2026
+
+`kuli bundle --provider <id> <path>...` shows what a provider would and would
+not be allowed to see. 149 checks, up from 124.
+
+```
+provider claude-code, cleared to L1
+  ok       L0   docs/spec.md
+  REFUSED  L2   business/plan.md
+  REFUSED  L3   .env
+
+  business/plan.md is L2; provider 'claude-code' is cleared to L1.
+  Use a cleared provider or stop — the content is not downgraded.
+
+  .env is L3. No provider may be given a secret in context, including one
+  cleared to L3; the credential proxy injects it into the request instead.
+```
+
+Three refusals, and each is a refusal rather than an adjustment.
+
+**A bundle above clearance cannot be built.** Not truncated, not summarised,
+not redacted down to size. A test reads `assemble`'s signature and asserts it
+takes nothing but parts and a provider — no `force`, no `allow`, no
+`truncate`. A door with a handle on it is not a wall.
+
+**L3 cannot enter a bundle at all**, including for a provider cleared to L3.
+Secrets go into outgoing *requests* via the proxy, never into a *context*.
+That line is where "a model that never sees a secret cannot leak one" is
+either true or false.
+
+**A provider with no clearance is refused everything, including L0.** The
+unknown case fails closed, because an unrecognised provider is exactly where
+generosity costs most.
+
+### Two things the tests caught
+
+**The refusal must not quote what it refused.** An error message is a log
+line, and a log line containing confidential text is the leak arriving by
+another door. There is a test that puts distinctive text in a refused part
+and asserts it appears nowhere in the message.
+
+**`part.level ==` is not an assignment.** The test asserting the module never
+lowers a level searched for the substring `part.level =`, which `part.level
+==` contains — so it failed on a comparison. Now a regex with `(?!=)`. A
+check that cannot tell a comparison from an assignment was not checking what
+it claimed to.
+
+Adding this tripped the ratchet twice — `cmd_bundle` at complexity 12, then
+`_add_trail` at 21 statements. Both paid with a split.
+
+**Next:** T6 — the return-path check. Every tool *result* classified again
+before it re-enters a context. The leak people forget.

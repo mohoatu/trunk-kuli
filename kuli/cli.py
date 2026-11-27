@@ -14,7 +14,7 @@ import argparse
 import json
 import sys
 
-from . import classify, measures, providers, ratchet, review_cost, trail
+from . import bundle, classify, measures, providers, ratchet, review_cost, trail
 
 
 def _utf8():
@@ -186,6 +186,8 @@ def _add_trail(sub):
     sub.add_parser("audit", help="verify the trail was not altered"
                    ).set_defaults(func=cmd_audit)
 
+
+def _add_boundary(sub):
     reg = sub.add_parser("providers", help="who may run here, and at what clearance")
     reg.add_argument("--init", action="store_true", help="write a starter registry")
     reg.set_defaults(func=cmd_providers)
@@ -196,6 +198,11 @@ def _add_trail(sub):
     level = sub.add_parser("classify", help="how sensitive a path is, and why")
     level.add_argument("paths", nargs="+")
     level.set_defaults(func=cmd_classify)
+
+    bun = sub.add_parser("bundle", help="what a provider may be shown")
+    bun.add_argument("paths", nargs="+")
+    bun.add_argument("--provider", help="registry id; defaults to the active one")
+    bun.set_defaults(func=cmd_bundle)
 
 
 ROW = "%-16s %-14s %-18s %-9s %s"
@@ -269,12 +276,47 @@ def cmd_classify(args):
     return 0
 
 
+def _resolve_provider(args):
+    """The named provider, or the one detected. None if the name is unknown."""
+    if not args.provider:
+        return providers.active(args.root)
+    for entry in providers.load(args.root):
+        if entry["id"] == args.provider:
+            return entry
+    return None
+
+
+def _print_verdicts(paths, refused, config):
+    for path in paths:
+        mark = "REFUSED" if path in refused else "ok"
+        print("  %-8s %-4s %s" % (mark, classify.level_of(path, config), path))
+    for why in refused.values():
+        print("\n  %s" % why)
+
+
+def cmd_bundle(args):
+    """What this provider would and would not be allowed to see."""
+    running = _resolve_provider(args)
+    if running is None:
+        print("No provider %r in the registry." % args.provider, file=sys.stderr)
+        return 2
+
+    config = ratchet.load_config(args.root)
+    print("provider %s, cleared to %s"
+          % (running["id"], running.get("clearance") or "nothing"))
+    refused = dict((part.source, why)
+                   for part, why in bundle.would_refuse(args.paths, running, config))
+    _print_verdicts(args.paths, refused, config)
+    return 1 if refused else 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="kuli", description=__doc__)
     parser.add_argument("--root", default=".", help="repository root")
     sub = parser.add_subparsers(dest="command", required=True)
     _add_gates(sub)
     _add_trail(sub)
+    _add_boundary(sub)
     return parser
 
 
