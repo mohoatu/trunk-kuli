@@ -17,8 +17,8 @@ import json
 import sys
 
 from . import (
-    bundle, capability, classify, contract, duties, gateway, grants, measures,
-    providers, ratchet, review_cost, toolguard, trail,
+    bundle, capability, classify, contract, duties, gateway, grants, mcp,
+    measures, providers, ratchet, review_cost, toolguard, trail,
 )
 
 #: Every refusal that means *this gate could not judge, so nothing passed*.
@@ -371,6 +371,9 @@ def cmd_duties(args):
         return 2
     print("%d commit(s) since %s, %d touching the rules"
           % (report["commits"], report["base"], report["touching_rules"]))
+    for commit, paths in report["excused"]:
+        print("  excused %s: %s removes nothing and adds no relaxation"
+              % (commit, ", ".join(paths)))
     if ok:
         print("Nobody relaxed a rule that was judging them.")
         return 0
@@ -461,7 +464,15 @@ def cmd_capability(args):
     return 0
 
 
+def cmd_serve(args):
+    """Speak MCP on stdin and stdout, so an agent calls the gates itself."""
+    return mcp.serve(args.root)
+
+
 def _add_authority(sub):
+    sub.add_parser("serve", help="expose the gates as MCP tools (read-only)"
+                   ).set_defaults(func=cmd_serve)
+
     for name, helptext in (("grant", "what a sub-task would hold"),
                            ("capability", "a signed, expiring grant")):
         cmd = sub.add_parser(name, help=helptext)

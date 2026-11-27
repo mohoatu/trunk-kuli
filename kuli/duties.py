@@ -23,6 +23,18 @@ is the second actor. Working alone with one provider, the second actor is the
 owner, and the trailer is where he says so — the same principle as "only a
 person may lower a classification level", applied to the rules rather than to
 the data.
+
+**One exemption, and the reason it is safe.** CI workflows are the one rule
+path that also holds changes which relax nothing — a new docs job, a bumped
+action version. For workflows only, A1 is held against a change that **removes
+a line** or that **adds one of `RELAXING`**; a purely additive, unremarkable
+change is excused and reported rather than refused. A2 is never excused,
+because it costs one line and it is where a person says they looked.
+
+The exemption rests on the `RELAXING` list, not on additivity, because
+`continue-on-error: true` removes nothing and switches a job off. If a way to
+weaken a workflow by adding a line appears that is not on that list, this gate
+misses it. That is the known limit, written down rather than discovered later.
 """
 
 import re
@@ -38,11 +50,73 @@ RULE_FILES = (
     ".github/workflows/",
 )
 
+#: A workflow directory is the one entry above that holds two different kinds
+#: of change. "Delete the ratchet step" is a relaxation. "Add a job that
+#: builds the docs" is not, and A1 charged both the same price: a commit of
+#: its own. So for workflows only, **the diff decides**. A change that removes
+#: nothing cannot have taken a gate away, and is excused from A1 — never from
+#: A2, which costs one line.
+WORKFLOW_DIR = ".github/workflows/"
+
+#: The hole in that rule, closed by name. `continue-on-error: true` removes
+#: no line and disables a job, so additivity alone cannot be trusted and this
+#: list is what makes the exemption safe rather than convenient.
+RELAXING = ("continue-on-error", "|| true", "|| :", "if: false",
+            "--no-verify", "--exit-zero", "exit 0")
+
 TRAILER = re.compile(r"^Rules-approved-by:\s*(\S.*)$", re.M)
 
 
 def is_rule_file(path):
     return any(path == name or path.startswith(name) for name in RULE_FILES)
+
+
+def removed_count(commit, path, root="."):
+    """How many lines this commit took out of one file."""
+    out = git(["show", "--numstat", "--format=", commit, "--", path], root)
+    for line in out.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[1].isdigit():
+            return int(fields[1])
+    return 0
+
+
+def added_text(commit, path, root="."):
+    out = git(["show", "--format=", "--unified=0", commit, "--", path], root)
+    return [line[1:] for line in out.splitlines()
+            if line.startswith("+") and not line.startswith("+++")]
+
+
+def relaxation_in(commit, path, root="."):
+    """The first added marker that weakens a gate without removing anything."""
+    for line in added_text(commit, path, root):
+        lowered = line.lower()
+        for marker in RELAXING:
+            if marker in lowered:
+                return marker
+    return None
+
+
+def binds(commit, path, root="."):
+    """Why this rule change binds A1, or None when it is excused."""
+    if not path.startswith(WORKFLOW_DIR):
+        return "a rule file"
+    marker = relaxation_in(commit, path, root)
+    if marker:
+        return "it adds %r" % marker
+    return "it removes lines" if removed_count(commit, path, root) else None
+
+
+def _split_rules(commit, rules, root="."):
+    """The rule changes A1 holds against this commit, and the excused ones."""
+    binding, excused = [], []
+    for path in rules:
+        why = binds(commit, path, root)
+        if why:
+            binding.append("%s — %s" % (path, why))
+        else:
+            excused.append(path)
+    return binding, excused
 
 
 def commits_in(base, root="."):
@@ -68,9 +142,12 @@ def inspect(commit, root="."):
     """What this commit touched, and who approved it if anyone."""
     files = files_in(commit, root)
     rules = [f for f in files if is_rule_file(f)]
+    binding, excused = _split_rules(commit, rules, root)
     return {
         "commit": commit[:12],
         "rule_files": rules,
+        "binding": binding,
+        "excused": excused,
         "work_files": [f for f in files if not is_rule_file(f)],
         "approved_by": approver(commit, root),
     }
@@ -81,12 +158,12 @@ def faults(record):
     if not record["rule_files"]:
         return []
     found = []
-    if record["work_files"]:
+    if record["binding"] and record["work_files"]:
         found.append(
             "A1: it changes the rules (%s) and the work they judge (%d other "
             "file(s)) in one commit. Split them, so the relaxation is the only "
             "thing in its own diff."
-            % (", ".join(record["rule_files"]), len(record["work_files"])))
+            % ("; ".join(record["binding"]), len(record["work_files"])))
     if not record["approved_by"]:
         found.append(
             "A2: it changes the rules (%s) with no second actor. Add a "
@@ -95,14 +172,18 @@ def faults(record):
     return found
 
 
+def _counted(records):
+    """The parts of the report that are arithmetic rather than judgement."""
+    return {
+        "commits": len(records),
+        "touching_rules": len([r for r in records if r["rule_files"]]),
+        "excused": [(r["commit"], r["excused"]) for r in records if r["excused"]],
+    }
+
+
 def run(base, root="."):
     """Returns (ok, report) for every commit since `base`."""
     records = [inspect(commit, root) for commit in commits_in(base, root)]
-    offences = [(r, faults(r)) for r in records]
-    broken = [(r, f) for r, f in offences if f]
-    return (not broken), {
-        "base": base,
-        "commits": len(records),
-        "touching_rules": len([r for r in records if r["rule_files"]]),
-        "faults": broken,
-    }
+    broken = [(r, f) for r, f in ((r, faults(r)) for r in records) if f]
+    report = dict(_counted(records), base=base, faults=broken)
+    return (not broken), report

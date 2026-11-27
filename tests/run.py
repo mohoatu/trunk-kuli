@@ -9,6 +9,7 @@ here, not only to agree.
 """
 
 import inspect
+import io
 import json
 import os
 import re
@@ -22,8 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    bundle, capability, classify, contract, duties, gateway, grants, measures,
-    providers, ratchet, redact, review_cost, toolguard, trail,
+    bundle, capability, classify, contract, duties, gateway, grants, mcp,
+    measures, providers, ratchet, redact, review_cost, toolguard, trail,
 )
 
 RESULTS = []
@@ -830,6 +831,84 @@ def test_an_approved_rule_change_passes(tmp):
     check("a lone, approved rule change passes", ok)
 
 
+WORKFLOW = ".github/workflows/verify.yml"
+A_JOB = ("name: verify\njobs:\n  tests:\n    steps:\n"
+         "      - run: python tests/run.py\n")
+
+
+APPROVED = "%s\n\nRules-approved-by: The Owner"
+
+
+def _commit_all(tmp, files, message):
+    for relative, text in files.items():
+        write(tmp, relative, text)
+    git_in(tmp, "add", "-A")
+    git_in(tmp, "commit", "-qm", message)
+
+
+def _workflow_repo(tmp):
+    """A repo whose workflow exists already, so the next diff can remove."""
+    base = a_repo(tmp)
+    _commit_all(tmp, {WORKFLOW: A_JOB}, APPROVED % "ci")
+    return base
+
+
+def _with_code(tmp, workflow, message):
+    """One commit changing the workflow and a work file. Returns the report."""
+    base = _workflow_repo(tmp)
+    _commit_all(tmp, {WORKFLOW: workflow, "app.py": "x = 2\n"}, message)
+    return duties.run(base, tmp)
+
+
+def test_an_additive_workflow_change_is_excused_from_a1(tmp):
+    added = A_JOB + "  docs:\n    steps:\n      - run: make docs\n"
+    ok, report = _with_code(tmp, added, APPROVED % "a docs job and a feature")
+    check("adding a job alongside code is not refused", ok, report["faults"])
+    equal("and both workflow commits are reported as excused, not silent",
+          [paths for _, paths in report["excused"]], [[WORKFLOW], [WORKFLOW]])
+
+
+def test_a_workflow_change_still_needs_a_second_actor(tmp):
+    added = A_JOB + "  docs:\n    steps:\n      - run: make docs\n"
+    problems = _with_code(tmp, added, "a docs job and a feature")[1]["faults"][0][1]
+    check("A2 is never excused",
+          any(p.startswith("A2") for p in problems), problems)
+    check("but A1 is, for a purely additive change",
+          not any(p.startswith("A1") for p in problems), problems)
+
+
+def test_removing_a_line_from_a_workflow_binds_a1(tmp):
+    stripped = "name: verify\njobs:\n  tests:\n    steps:\n"
+    ok, report = _with_code(tmp, stripped, APPROVED % "drop the suite")
+    check("taking a step out alongside code is still refused", not ok)
+    check("and the reason names the removal",
+          any("removes lines" in p for p in report["faults"][0][1]),
+          report["faults"])
+
+
+#: Each adds a line, removes none, and switches a gate off.
+ADDITIVE_RELAXATIONS = (
+    ("    continue-on-error: true\n", "continue-on-error"),
+    ("      - run: kuli ratchet || true\n", "|| true"),
+    ("    if: false\n", "if: false"),
+)
+
+
+def test_an_additive_relaxation_is_caught_by_name():
+    """The hole in the additive rule, closed by the RELAXING list."""
+    for marker, label in ADDITIVE_RELAXATIONS:
+        each = Path(tempfile.mkdtemp(prefix="kuli-"))
+        try:
+            faults = _with_code(each, A_JOB + marker, APPROVED % "ci")[1]["faults"]
+            problems = faults[0][1] if faults else []
+            check("%s is refused though it removes nothing" % label,
+                  any(p.startswith("A1") for p in problems), problems)
+            check("and the marker is named for %s" % label,
+                  any(label in p for p in problems), problems)
+        finally:
+            shutil.rmtree(each, ignore_errors=True)
+
+
 def test_what_counts_as_a_rule_file():
     for path in ("kuli.json", ".kuli/baseline.json", "providers.json",
                  ".github/workflows/verify.yml"):
@@ -1193,6 +1272,106 @@ def test_dispatch_judges_what_came_back(tmp):
               "contract.md" in str(exc) and "see business" not in str(exc))
 
 
+# --- the gates as MCP tools ------------------------------------------------
+
+def _ask(method, params=None, root=None, identifier=1):
+    message = {"jsonrpc": "2.0", "method": method}
+    if identifier is not None:
+        message["id"] = identifier
+    if params is not None:
+        message["params"] = params
+    return mcp.handle(message, str(root or ROOT))
+
+
+def _text_of(response):
+    return response["result"]["content"][0]["text"]
+
+
+def test_the_handshake():
+    result = _ask("initialize", {})["result"]
+    equal("the protocol version is stated", result["protocolVersion"],
+          mcp.PROTOCOL)
+    equal("and the server names itself", result["serverInfo"]["name"], "kuli")
+    check("tools are the declared capability", "tools" in result["capabilities"])
+
+
+def test_every_tool_is_described():
+    tools = _ask("tools/list", {})["result"]["tools"]
+    equal("one entry per gate", len(tools), len(mcp.TOOLS))
+    for tool in tools:
+        check("%s has a description" % tool["name"], len(tool["description"]) > 20)
+        equal("%s takes an object" % tool["name"],
+              tool["inputSchema"]["type"], "object")
+
+
+def test_the_surface_writes_nothing():
+    """An agent may ask whether it would pass. It may not move the bar."""
+    source = inspect.getsource(mcp)
+    # Call-shaped, so the docstring explaining what is absent does not count
+    # as the thing being present.
+    for forbidden in ("write_baseline(", "write_starter(", "freeze(",
+                      "create(", "write_text(", "mint("):
+        check("the MCP surface never calls %s" % forbidden,
+              forbidden not in source)
+    for absent in ("baseline", "init", "record"):
+        check("and exposes no %r tool" % absent, absent not in mcp.HANDLERS)
+
+
+def test_a_verdict_is_never_an_argument():
+    for _, _, schema, _ in mcp.TOOLS:
+        for field in schema.get("properties", {}):
+            check("no tool accepts %r as input" % field,
+                  field not in ("level", "verdict", "ok", "allowance",
+                                "clearance", "pass"))
+
+
+def test_a_gate_answers_through_the_tool():
+    text = _text_of(_ask("tools/call", {"name": "ratchet", "arguments": {}}))
+    check("the ratchet reports through MCP", text.startswith(mcp.PASS), text)
+    reply = _ask("tools/call", {"name": "classify",
+                                "arguments": {"paths": [".env", "README.md"]}})
+    text = _text_of(reply)
+    check("classify names the secret level", "L3" in text and ".env" in text)
+    check("and a verdict is not an error", not reply["result"]["isError"])
+
+
+def test_cannot_judge_is_not_a_pass():
+    reply = _ask("tools/call", {"name": "classify", "arguments": {"paths": []}})
+    check("nothing to classify is undecided",
+          _text_of(reply).startswith(mcp.UNDECIDED))
+    check("and it is flagged as an error, not a pass",
+          reply["result"]["isError"])
+    missing = _ask("tools/call", {"name": "nonsense", "arguments": {}})
+    check("an unknown tool is undecided rather than a crash",
+          _text_of(missing).startswith(mcp.UNDECIDED))
+
+
+def test_a_broken_tool_call_does_not_kill_the_server():
+    reply = _ask("tools/call", {"name": "contract_check",
+                                "arguments": {"slug": "no-such-increment"}})
+    check("a missing contract comes back as text", "content" in reply["result"])
+    check("and says it could not judge",
+          _text_of(reply).startswith(mcp.UNDECIDED), _text_of(reply))
+
+
+def test_unknown_methods_and_notifications():
+    reply = _ask("resources/list", {})
+    equal("an unsupported method is a JSON-RPC error",
+          reply["error"]["code"], mcp.METHOD_NOT_FOUND)
+    equal("a notification gets no response",
+          _ask("notifications/initialized", {}, identifier=None), None)
+
+
+def test_a_bad_line_is_skipped_not_fatal(tmp):
+    lines = ['not json\n', '\n',
+             json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}) + "\n"]
+    out = io.StringIO()
+    equal("the loop finishes", mcp.serve(str(ROOT), iter(lines), out), 0)
+    replies = [json.loads(line) for line in out.getvalue().splitlines()]
+    equal("and only the real request was answered", len(replies), 1)
+    equal("with its own id", replies[0]["id"], 7)
+
+
 NEEDS_TMP = [
     test_python_measures, test_javascript_measures, test_erosion,
     test_duplication, test_skips, test_ratchet_holds_and_trips,
@@ -1209,6 +1388,10 @@ NEEDS_TMP = [
     test_work_alone_is_fine, test_rules_and_work_together_are_refused,
     test_rules_alone_still_need_a_second_actor,
     test_an_approved_rule_change_passes,
+    test_an_additive_workflow_change_is_excused_from_a1,
+    test_a_workflow_change_still_needs_a_second_actor,
+    test_removing_a_line_from_a_workflow_binds_a1,
+
     test_an_unsigned_contract_is_not_ready,
     test_the_producer_may_not_be_the_reviewer,
     test_a_signed_contract_is_ready,
@@ -1222,6 +1405,7 @@ NEEDS_TMP = [
     test_a_transport_this_build_cannot_honour_is_refused,
     test_dispatch_refuses_before_it_calls,
     test_dispatch_judges_what_came_back,
+    test_a_bad_line_is_skipped_not_fatal,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -1243,6 +1427,12 @@ NO_TMP = [
     test_the_withheld_result_is_not_quoted,
     test_a_cleared_provider_still_gets_it, test_paths_in_text,
     test_what_counts_as_a_rule_file,
+    test_an_additive_relaxation_is_caught_by_name,
+    test_the_handshake, test_every_tool_is_described,
+    test_the_surface_writes_nothing, test_a_verdict_is_never_an_argument,
+    test_a_gate_answers_through_the_tool, test_cannot_judge_is_not_a_pass,
+    test_a_broken_tool_call_does_not_kill_the_server,
+    test_unknown_methods_and_notifications,
     test_a_root_grant_is_the_registry_ceiling,
     test_asking_for_more_gives_less,
     test_a_chain_of_hops_can_only_shrink,

@@ -344,6 +344,13 @@ non-zero. No model takes part in the decision.
 | **Capability gate** | A call presents no valid signature for the authority it claims, or the grant has expired |
 | **Evidence gate** | `evidence/` is older than the code it claims to describe |
 
+Each gate is reachable two ways: as a command, which is how CI runs it, and as
+an **MCP tool**, which is how an agent product runs it inside its own loop. The
+second surface is read-only and returns verdicts only — it issues nothing,
+writes nothing, and accepts no verdict as an argument. See
+[`08-neighbours.md`](08-neighbours.md) §5.1; the reason it exists is that a
+gate outside the agent's loop is a gate that fires when somebody remembers.
+
 ### 8.1 The current-API gate
 
 The requirement is: **the model must not write code from the stale API it

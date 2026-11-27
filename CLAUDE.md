@@ -29,6 +29,19 @@ below adds to it; nothing below overrides it.
   reported per language and are not comparable across them.
 - **A gate that cannot judge abstains.** It returns neither pass nor fail and
   exits 2. It must never report success for a question it did not answer.
+- **A *permission* that cannot judge refuses.** The opposite of the line above,
+  and deliberately. An unrecognised key in `providers.json` or `kuli.json` is
+  named and refused, because a misspelt `clearence` that is quietly ignored is
+  a permission nobody applied and everybody believed.
+- **Authority is narrowed, never widened.** `Grant.narrow` returns the
+  intersection and there is no `widen`. The registry sets the ceiling; a
+  sub-task gets `parent.narrow(...)` and nothing else can construct one. Do not
+  add a path that raises a level, including "just for the owner".
+- **The MCP surface (`kuli serve`) is read-only, and stays that way.** It
+  returns verdicts. Do not add a tool that writes a baseline, freezes a
+  contract, mints a capability or edits a rule file — that would give the thing
+  being judged a way to move the bar, which is what this whole project exists
+  to prevent. A test reads this module's own source to keep it honest.
 
 ## Commands
 
@@ -37,6 +50,7 @@ python tests/run.py                       # every check — must be green before
 python -m kuli.cli measure                # the numbers, as JSON
 python -m kuli.cli baseline               # record today's numbers as the line to hold
 python -m kuli.cli ratchet                # fail if anything got worse
+python -m kuli.cli serve                  # the gates as MCP tools, read-only
 python -m kuli.cli review-cost --base REF # fail if the change costs too much to read
 ```
 

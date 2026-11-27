@@ -298,6 +298,40 @@ Why this shape: [`docs/07-orchestrator.md`](docs/07-orchestrator.md), which
 reads Google's Agent Mesh against this project and says which layer a corridor
 for agents belongs in.
 
+### 7. Let the agent call the gates itself
+
+Everything above is a command. A command runs when CI runs it, or when you
+remember to. An agent product has its own loop, and a gate outside that loop
+is a gate that fires when somebody remembers.
+
+So the gates are also MCP tools:
+
+```bash
+python -m kuli.cli serve     # JSON-RPC 2.0 on stdin/stdout, no dependencies
+```
+
+```json
+{ "mcpServers": { "kuli": { "command": "python",
+                            "args": ["-m", "kuli.cli", "serve"] } } }
+```
+
+Six tools — `ratchet`, `classify`, `review_cost`, `duties`, `contract_check`,
+`capability_verify` — and three rules about what they are:
+
+**Read-only.** Every tool returns a verdict; none writes a file. No
+`baseline`, no `contract freeze`, no minting a capability. An agent can ask
+*would this pass* as often as it likes and cannot move a bar through this
+door. Lowering a bar stays a commit, alone in its diff, with a person's name
+in the trailer.
+
+**A verdict is never an argument.** No tool takes a level, an allowance or a
+pass/fail. You say what to look at; it says what it found. Otherwise this
+would be a prompt with a JSON schema.
+
+**Cannot judge is not a pass.** `isError: true` with a text beginning
+`CANNOT JUDGE`. A refusal is the tool working, so it is `isError: false`
+beginning `REFUSED` — an agent that treats a refusal as a crash will retry it.
+
 ### Exit codes
 
 | Code | Meaning |

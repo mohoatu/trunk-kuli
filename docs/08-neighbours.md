@@ -170,6 +170,48 @@ fixes. Worth doing, not worth doing third.
 
 ---
 
+## 5.1 Adopted — 27/11/2026
+
+**P1 built.** 320 checks, up from 277.
+
+```bash
+kuli serve        # newline-delimited JSON-RPC 2.0 on stdin/stdout
+```
+
+Six tools: `ratchet`, `classify`, `review_cost`, `duties`, `contract_check`,
+`capability_verify`. No SDK — `kuli/mcp.py` is a hand-written loop over the
+standard library, because an SDK here would have been the project's first
+dependency.
+
+Three rules decide what the surface exposes, and they matter more than the
+wire format.
+
+**It is read-only.** Every tool returns a verdict; none writes a file. There
+is no `baseline`, no `contract freeze`, no `providers --init`, no `capability`
+minting. An agent may ask *would this pass* as often as it likes and has no
+way to move a bar through this door. Lowering a bar stays what it was: a
+commit, alone in its diff, with a person's name in the trailer. A test asserts
+this by reading the module's own source for call-shaped writes.
+
+**A verdict is never an argument.** No tool accepts a level, an allowance, a
+clearance or a pass/fail. The caller says what to look at; the gate says what
+it found. A surface that let a model pass in the answer would be a prompt with
+a JSON schema, and a test pins the input field names against that list.
+
+**Cannot judge is not a pass.** No baseline, no criteria claimed, no such
+contract — `isError: true` and a text beginning `CANNOT JUDGE`. A refusal is
+the tool *working*, so it returns `isError: false` beginning `REFUSED`; an
+agent that treated a refusal as a crash would retry it.
+
+To use it from an agent product, point the product at this repository:
+
+```json
+{ "mcpServers": { "kuli": { "command": "python",
+                            "args": ["-m", "kuli.cli", "serve"] } } }
+```
+
+P2, P3 and P4 are unchanged and unbuilt.
+
 ## 6. Recommendation
 
 **P1 now. P2 alongside it, because it is half a day. P3 with T10. P4 only

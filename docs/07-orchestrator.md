@@ -294,8 +294,24 @@ to compare. The commit that made that change touched only the workflow and
 carried a `Rules-approved-by:` trailer, which is the gate's own prescription
 followed rather than argued with.
 
-**`.github/workflows/` may be too broad for `RULE_FILES`.** Any commit that adds
-a workflow beside code now trips A1 — which is right for a workflow that *relaxes*
-a gate and heavy-handed for one that adds an unrelated job. Narrowing it to the
-workflows that run gates is possible; leaving it strict is defensible. Not
-deciding it silently.
+**`.github/workflows/` was too broad for `RULE_FILES`.** Any commit that added
+a workflow beside code tripped A1 — right for a workflow that *relaxes* a gate,
+heavy-handed for one that adds an unrelated job. **Decided 27/11/2026:** for
+workflows only, the diff decides. A change that removes a line, or that adds
+one of `duties.RELAXING`, binds A1; a purely additive, unremarkable change is
+excused and **reported** rather than refused. A2 is never excused, because it
+costs one line and it is where a person says they looked.
+
+The exemption rests on the `RELAXING` list, not on additivity, because
+`continue-on-error: true` removes nothing and switches a job off. Three such
+markers are tested. The known limit is written into `kuli/duties.py`: a way to
+weaken a workflow by adding a line that is not on that list is a way past this
+gate. Rejected alternative: deciding from the YAML whether a job "is a gate",
+which is a heuristic, and a heuristic in a rule file is how a gate becomes a
+prompt.
+
+One thing this still does not cover, named rather than left to be found:
+`kuli/duties.py` itself is **not** a rule file. Editing the gate's own code is
+how the gate is bypassed most directly. Here that is unavoidable — this is
+where the gate is written — and in every other repository `kuli` is a pinned
+tag, which is the actual protection.
