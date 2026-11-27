@@ -36,7 +36,7 @@ agent that treats it as a crash will retry it.
 import json
 import sys
 
-from . import capability, contract, duties, grants, ratchet, review_cost
+from . import capability, contract, duties, gateway, grants, ratchet, review_cost
 from .classify import explain
 
 PROTOCOL = "2024-11-05"
@@ -101,6 +101,35 @@ def _capability_verify(args, root):
     return PASS, json.dumps(grant.as_dict(), indent=2, sort_keys=True)
 
 
+def _offer(args, root):
+    """Which of a queue a capability may work. Takes a token, never a level.
+
+    The authority arrives as a signature rather than as a claim, which is what
+    keeps "a verdict is never an argument" true for a tool that has to be told
+    who is asking.
+    """
+    grant = capability.verify(args.get("token"), capability.signing_key(root))
+    config = ratchet.load_config(root)
+    tasks = args.get("tasks") or []
+    verdicts = [(t, gateway.withheld(t, grant, config)) for t in tasks]
+    return PASS, json.dumps(
+        {"offered": [t for t, why in verdicts if not why],
+         "withheld": [{"task": t, "reason": why} for t, why in verdicts if why]},
+        indent=2, sort_keys=True)
+
+
+OFFER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "token": {"type": "string", "description": "a kuli1 capability token"},
+        "tasks": {"type": "array", "items": {"type": "object"},
+                  "description": "queue entries, each with a service and the "
+                                 "paths it will touch"},
+    },
+    "required": ["token", "tasks"],
+}
+
+
 def _paths_schema(description):
     return {"type": "object",
             "properties": {"paths": {"type": "array",
@@ -138,6 +167,9 @@ TOOLS = (
     ("capability_verify", "What grant a capability token carries, or why it is "
                           "refused. Never issues one.",
      _one("token", "a kuli1 capability token"), _capability_verify),
+    ("offer", "Which entries in a queue a capability may work, and the reason "
+              "each withheld one was not offered.",
+     OFFER_SCHEMA, _offer),
 )
 
 HANDLERS = dict((name, handler) for name, _, _, handler in TOOLS)

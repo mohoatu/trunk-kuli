@@ -210,7 +210,46 @@ To use it from an agent product, point the product at this repository:
                             "args": ["-m", "kuli.cli", "serve"] } } }
 ```
 
-P2, P3 and P4 are unchanged and unbuilt.
+**P2 built.** 341 checks.
+
+```bash
+kuli offer --provider cloud --level L1 --tools mcp://audit < queue.json
+```
+
+```
+  offered   mcp://audit
+  withheld  mcp://audit     L2 is above cloud, which holds L1
+  withheld  mcp://deploy    mcp://deploy is not a tool cloud may call
+  withheld  mcp://audit     L3 is above cloud, which holds L1
+```
+
+`gateway.offer(tasks, grant)` returns the subset of a queue a grant permits.
+`withheld(task, grant)` is the single function that answers it, and `dispatch`
+calls the same one — a filter and a refusal that answer the same question in
+two pieces of code eventually disagree, and that disagreement is a permission
+bug nobody is looking for. A test round-trips the queue through both and
+asserts *offered* and *dispatchable* are the same set.
+
+The MCP tool takes a **token**, never a level. A tool that has to be told who
+is asking is exactly where "a verdict is never an argument" would quietly
+break; a signature cannot be claimed, so authority arrives verified or not at
+all.
+
+**Two limits, both decisions rather than oversights.**
+
+A task is judged on what it **declares**: its service, and the classification
+level of every path it names. A task that names no paths is judged on its
+service alone — the gate cannot classify what it was not told about. The
+return-path check is what stands behind a task that declared nothing.
+
+And *unclassified means L2*, so in a repository with no `classification` rules
+an L1 provider is offered **nothing that declares a path**. That is the
+cautious default doing its job, and it means `offer` is only useful once a
+project has written its rules down. `kuli.json` here now classifies this
+repository, which is public in full; the fleet needs the same before this gate
+says anything interesting to it.
+
+P3 and P4 are unchanged and unbuilt.
 
 ## 6. Recommendation
 

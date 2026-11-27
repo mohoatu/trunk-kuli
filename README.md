@@ -294,6 +294,29 @@ or `kuli.json` is named and refused rather than ignored, because a misspelt
 `clearence` that is silently skipped is a permission nobody applied and
 everybody believed.
 
+And a grant filters a queue **before** an agent sees it, rather than only
+refusing the call:
+
+```bash
+python -m kuli.cli offer --provider cloud --level L1 --tools mcp://audit < queue.json
+```
+
+```
+  offered   mcp://audit
+  withheld  mcp://audit     L2 is above cloud, which holds L1
+  withheld  mcp://deploy    mcp://deploy is not a tool cloud may call
+  withheld  mcp://audit     L3 is above cloud, which holds L1
+```
+
+A queue entry names a service and the paths it will touch. The last one named
+a `.env` file, which no clearance admits. `offer` and the
+refusal at the call go through one function, so a filter and a refusal cannot
+drift into disagreeing — and a task is judged on **what it declares**, so a
+task that names no paths is judged on its service alone.
+
+Two things follow from *unclassified means L2*: write your `classification`
+rules, or an L1 provider is offered nothing that declares a path.
+
 Why this shape: [`docs/07-orchestrator.md`](docs/07-orchestrator.md), which
 reads Google's Agent Mesh against this project and says which layer a corridor
 for agents belongs in.

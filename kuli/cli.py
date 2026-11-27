@@ -469,23 +469,53 @@ def cmd_serve(args):
     return mcp.serve(args.root)
 
 
+def cmd_offer(args):
+    """Which of a queue on stdin this grant may work, and why not for the rest.
+
+    Refusal at the call is the backstop; this is the design. An agent should
+    not be shown work it cannot do.
+    """
+    grant = _root_grant(args).narrow(**_narrowing(args))
+    config = ratchet.load_config(args.root)
+    for task in json.load(sys.stdin):
+        reason = gateway.withheld(task, grant, config)
+        print("  %-9s %-24s %s" % ("withheld" if reason else "offered",
+                                   gateway.as_task(task).get("service") or "",
+                                   reason or ""))
+    return 0
+
+
+#: The flags every authority command shares, because they are all narrowings.
+NARROWING_FLAGS = (
+    ("--provider", {"help": "registry id; defaults to the active one"}),
+    ("--level", {"help": "narrow to this level at most"}),
+    ("--scope", {"nargs": "*", "help": "narrow to these paths"}),
+    ("--tools", {"nargs": "*", "help": "narrow to these tools"}),
+)
+
+AUTHORITY = {
+    "grant": ("what a sub-task would hold", cmd_grant),
+    "capability": ("a signed, expiring grant", cmd_capability),
+    "offer": ("which of a queue on stdin this grant may work", cmd_offer),
+}
+
+
 def _add_authority(sub):
     sub.add_parser("serve", help="expose the gates as MCP tools (read-only)"
                    ).set_defaults(func=cmd_serve)
 
-    for name, helptext in (("grant", "what a sub-task would hold"),
-                           ("capability", "a signed, expiring grant")):
+    made = {}
+    for name, (helptext, func) in sorted(AUTHORITY.items()):
         cmd = sub.add_parser(name, help=helptext)
-        cmd.add_argument("--provider", help="registry id; defaults to the active one")
-        cmd.add_argument("--level", help="narrow to this level at most")
-        cmd.add_argument("--scope", nargs="*", help="narrow to these paths")
-        cmd.add_argument("--tools", nargs="*", help="narrow to these tools")
-        if name == "capability":
-            cmd.add_argument("--ttl", type=int, default=900, help="seconds")
-            cmd.add_argument("--verify", dest="token", help="read a token instead")
-            cmd.set_defaults(func=cmd_capability)
-        else:
-            cmd.set_defaults(func=cmd_grant)
+        for flag, options in NARROWING_FLAGS:
+            cmd.add_argument(flag, **options)
+        cmd.set_defaults(func=func)
+        made[name] = cmd
+
+    made["capability"].add_argument("--ttl", type=int, default=900,
+                                    help="seconds the capability lives")
+    made["capability"].add_argument("--verify", dest="token",
+                                    help="read a token instead of issuing one")
 
 
 def build_parser():

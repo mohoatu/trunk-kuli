@@ -25,10 +25,29 @@ thing when the thing it names moves.
 token that does not name the service is refused before the call is made. And
 the result is classified on the way back, because the call being permitted
 says nothing about what the answer turned out to contain.
+
+**Filter the offer, not only the call.** Refusing at `dispatch` was correct and
+the wrong end of the pipe: a queue an agent cannot work is a queue it should
+never have been shown. `offer` returns the subset of a queue a grant permits,
+and `dispatch` keeps refusing as the backstop it should always have been. Both
+go through `withheld`, deliberately — a filter and a refusal that answer the
+same question in two pieces of code will eventually disagree, and the
+disagreement is a permission bug nobody is looking for.
+
+Read from Tratha AI, which offers an agent only work it is capable of
+([`08-neighbours.md`](../docs/08-neighbours.md) §3).
+
+**A task is judged on what it declares.** `withheld` reads `service` and
+`paths` from the task. A task that names no paths is judged on its service
+alone, which is a real gap rather than a safe default: the gate cannot classify
+what it was not told about. Declaring paths is how a task gets judged properly,
+and the return-path check in `_check_return` is what stands behind a task that
+did not.
 """
 
 from . import capability, providers, toolguard
 from .bundle import ClearanceError
+from .classify import level_of
 from .grants import coerce
 
 #: Transports this build can honour. `mesh` is absent on purpose.
@@ -71,7 +90,37 @@ def present(authority, key, seconds=900, **limits):
                            key, seconds)
 
 
-def dispatch(service, token, key, call, root=".", config=None):
+def as_task(what):
+    """A task, from a task or from a bare service name."""
+    return what if isinstance(what, dict) else {"service": what}
+
+
+def withheld(task, authority, config=None):
+    """Why this authority may not take this task, or None when it may.
+
+    The one place that answers the question, so that `offer` and `dispatch`
+    cannot drift apart. A task is judged on what it declares: its service, and
+    the classification level of every path it names.
+    """
+    grant = coerce(authority)
+    task = as_task(task)
+    service = task.get("service")
+    reason = grant.refusal(tool=service) if service else None
+    if reason:
+        return reason
+    for path in task.get("paths") or ():
+        reason = grant.refusal(path=path, level=level_of(path, config))
+        if reason:
+            return reason
+    return None
+
+
+def offer(tasks, authority, config=None):
+    """The subset of a queue this authority may work. The rest is not shown."""
+    return [task for task in tasks if not withheld(task, authority, config)]
+
+
+def dispatch(task, token, key, call, root=".", config=None):
     """Verify, resolve, refuse or call, then judge what came back.
 
     `call` receives the endpoint and returns the result. Injecting it is what
@@ -79,9 +128,9 @@ def dispatch(service, token, key, call, root=".", config=None):
     gates be tested without a network.
     """
     grant = capability.verify(token, key)
-    endpoint = resolve(service, root)
+    endpoint = resolve(as_task(task).get("service"), root)
 
-    refusal = grant.refusal(tool=service)
+    refusal = withheld(task, grant, config)
     if refusal:
         raise GatewayError("the call was not made: %s" % refusal)
 

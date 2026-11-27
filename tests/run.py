@@ -1272,6 +1272,81 @@ def test_dispatch_judges_what_came_back(tmp):
               "contract.md" in str(exc) and "see business" not in str(exc))
 
 
+# --- filter the offer, not only the call -----------------------------------
+
+QUEUE = (
+    {"service": "mcp://audit", "paths": ["src/engine.js"]},
+    {"service": "mcp://audit", "paths": ["business/legal/contract.md"]},
+    {"service": "mcp://deploy", "paths": ["src/engine.js"]},
+    {"service": "mcp://audit"},
+)
+
+#: src is public, business/legal is confidential. Everything else is L2.
+OFFER_CONFIG = {"classification": {"rules": [
+    {"match": "src/**", "level": "L0"},
+    {"match": "business/legal/**", "level": "L2"},
+]}}
+
+
+def _worker(level="L1", tools=("mcp://audit",)):
+    return grants.Grant(principal="cloud", level=level, tools=tuple(tools))
+
+
+def test_a_queue_is_filtered_before_it_is_shown():
+    offered = gateway.offer(QUEUE, _worker(), OFFER_CONFIG)
+    equal("only the work this grant can do is offered", len(offered), 2)
+    equal("the public path is offered", offered[0]["paths"], ["src/engine.js"])
+    check("the confidential one is not",
+          all("business/legal/contract.md" not in (t.get("paths") or [])
+              for t in offered))
+    check("and neither is another service",
+          all(t["service"] == "mcp://audit" for t in offered))
+
+
+def test_every_withholding_says_why():
+    reasons = [gateway.withheld(t, _worker(), OFFER_CONFIG) for t in QUEUE]
+    check("a confidential path names the level",
+          "L2 is above cloud" in (reasons[1] or ""), reasons[1])
+    check("an unpermitted service names the tool",
+          "mcp://deploy" in (reasons[2] or ""), reasons[2])
+    equal("and a permitted task has no reason at all", reasons[0], None)
+
+
+def test_a_task_is_judged_on_what_it_declares():
+    """The known gap, pinned so it is a decision rather than a surprise."""
+    bare = {"service": "mcp://audit"}
+    equal("a task naming no path passes on its service alone",
+          gateway.withheld(bare, _worker(), OFFER_CONFIG), None)
+    equal("declaring the path is what gets it judged",
+          gateway.withheld(dict(bare, paths=["business/legal/contract.md"]),
+                           _worker(), OFFER_CONFIG) is None, False)
+
+
+def test_offer_and_dispatch_cannot_disagree(tmp):
+    write(tmp, "providers.json", LOCAL_SERVICE)
+    grant = _worker()
+    token = capability.sign(grant, KEY)
+    for task in QUEUE:
+        if task["service"] != "mcp://audit":
+            continue
+        permitted = task in gateway.offer(QUEUE, grant, OFFER_CONFIG)
+        try:
+            gateway.dispatch(task, token, KEY, lambda e: "fine", tmp,
+                             OFFER_CONFIG)
+            refused = False
+        except (gateway.GatewayError, bundle.ClearanceError):
+            refused = True
+        equal("offered means dispatchable for %s" % (task.get("paths"),),
+              permitted, not refused)
+
+
+def test_an_expired_grant_is_offered_nothing():
+    stale = grants.Grant(principal="cloud", level="L2", tools=("mcp://audit",),
+                         expires="2020-01-01T00:00:00Z")
+    equal("an expired grant sees an empty queue",
+          gateway.offer(QUEUE, stale, OFFER_CONFIG), [])
+
+
 # --- the gates as MCP tools ------------------------------------------------
 
 def _ask(method, params=None, root=None, identifier=1):
@@ -1362,6 +1437,30 @@ def test_unknown_methods_and_notifications():
           _ask("notifications/initialized", {}, identifier=None), None)
 
 
+def test_the_offer_tool_takes_a_token_not_a_level(tmp):
+    """Authority arrives as a signature, so the caller cannot claim it."""
+    schema = dict((name, s) for name, _, s, _ in mcp.TOOLS)["offer"]
+    equal("the offer tool requires a token",
+          sorted(schema["required"]), ["tasks", "token"])
+    check("and never a level", "level" not in schema["properties"])
+
+    token = capability.sign(_worker(level="L0"), KEY)
+    reply = mcp.call("offer", {"token": token, "tasks": list(QUEUE)}, str(tmp))
+    check("an unsigned environment cannot judge", reply["isError"],
+          reply["content"][0]["text"])
+
+    key_file = Path(tmp).parent / "offer.key"
+    key_file.write_bytes(KEY + b"0" * 8)
+    os.environ["KULI_CAPABILITY_KEY_FILE"] = str(key_file)
+    try:
+        bad = mcp.call("offer", {"token": token, "tasks": []}, str(tmp))
+        check("a token signed with another key is refused, not honoured",
+              bad["isError"], bad["content"][0]["text"])
+    finally:
+        del os.environ["KULI_CAPABILITY_KEY_FILE"]
+        key_file.unlink()
+
+
 def test_a_bad_line_is_skipped_not_fatal(tmp):
     lines = ['not json\n', '\n',
              json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}) + "\n"]
@@ -1405,6 +1504,8 @@ NEEDS_TMP = [
     test_a_transport_this_build_cannot_honour_is_refused,
     test_dispatch_refuses_before_it_calls,
     test_dispatch_judges_what_came_back,
+    test_offer_and_dispatch_cannot_disagree,
+    test_the_offer_tool_takes_a_token_not_a_level,
     test_a_bad_line_is_skipped_not_fatal,
 ]
 NO_TMP = [
@@ -1433,6 +1534,10 @@ NO_TMP = [
     test_a_gate_answers_through_the_tool, test_cannot_judge_is_not_a_pass,
     test_a_broken_tool_call_does_not_kill_the_server,
     test_unknown_methods_and_notifications,
+    test_a_queue_is_filtered_before_it_is_shown,
+    test_every_withholding_says_why,
+    test_a_task_is_judged_on_what_it_declares,
+    test_an_expired_grant_is_offered_nothing,
     test_a_root_grant_is_the_registry_ceiling,
     test_asking_for_more_gives_less,
     test_a_chain_of_hops_can_only_shrink,
