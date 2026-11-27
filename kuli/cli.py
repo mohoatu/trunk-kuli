@@ -8,6 +8,7 @@
     kuli grant                what a sub-task would hold, next to its ceiling
     kuli capability           the same grant, signed and with a deadline
     kuli conform              every provider, asked the same forbidden things
+    kuli egress               the process that holds the keys, so adapters do not
     kuli report               what each provider did, and what stopped it
 
 Exit code 0 means pass, 1 means a gate refused, 2 means the gate could not
@@ -22,8 +23,8 @@ from pathlib import Path
 
 from . import (
     adapters, bundle, capability, classify, conformance, contract, duties,
-    gateway, grants, mcp, measures, providers, ratchet, review_cost, runner,
-    toolguard, tools, trail,
+    egress, gateway, grants, mcp, measures, providers, ratchet, review_cost,
+    runner, toolguard, tools, trail,
 )
 
 #: Every refusal that means *this gate could not judge, so nothing passed*.
@@ -33,7 +34,7 @@ CANNOT_JUDGE = (providers.RegistryError, ratchet.ConfigError,
                 classify.ClassificationError, grants.GrantError,
                 capability.CapabilityError, gateway.GatewayError,
                 adapters.AdapterError, bundle.ClearanceError,
-                tools.ToolError)
+                tools.ToolError, egress.EgressError)
 
 
 #: What `chcp 65001` sets. Named because the number means nothing on sight.
@@ -243,6 +244,10 @@ def _add_boundary(sub):
     sub.add_parser("conform", help="every provider, asked the same forbidden "
                                    "things, judged the same way"
                    ).set_defaults(func=cmd_conform)
+
+    out = sub.add_parser("egress", help="the process that holds the keys")
+    out.add_argument("--port", type=int, default=egress.DEFAULT_PORT)
+    out.set_defaults(func=cmd_egress)
 
     level = sub.add_parser("classify", help="how sensitive a path is, and why")
     level.add_argument("paths", nargs="+")
@@ -595,6 +600,17 @@ def cmd_run(args):
                         talk=lambda m, e, s: adapters.converse(
                             m, e, s, timeout=args.timeout))
     print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_egress(args):
+    """Hold the credentials here, so the adapter's process never has them."""
+    server = egress.build(args.root, args.port)
+    print("Egress proxy on http://%s:%d — destinations: %s"
+          % (egress.LOOPBACK, args.port, ", ".join(sorted(server.table))))
+    print("Point an adapter at %s:%d/to/<destination> and give it no key."
+          % (egress.LOOPBACK, args.port))
+    server.serve_forever()
     return 0
 
 

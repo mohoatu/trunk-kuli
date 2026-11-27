@@ -26,8 +26,8 @@ sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
     adapters, bundle, capability, classify, conformance, contract, duties,
-    gateway, grants, mcp, measures, providers, ratchet, redact, review_cost,
-    runner, toolguard, tools, trail,
+    egress, gateway, grants, mcp, measures, providers, ratchet, redact,
+    review_cost, runner, toolguard, tools, trail,
 )
 
 RESULTS = []
@@ -1321,6 +1321,24 @@ def test_what_counts_as_this_machine():
         check("%r is not" % url, not providers.is_loopback(url))
 
 
+def test_a_hosted_provider_behind_a_local_proxy_is_not_local(tmp):
+    """The hole T15 opened on the day it was built.
+
+    An egress proxy runs on this machine and sends somewhere else, so a
+    hosted provider configured as a loopback URL would have passed the
+    clearance check. The loopback test would have been measuring where the
+    first hop goes.
+    """
+    routed = "http://127.0.0.1:8808" + providers.EGRESS_PREFIX + "vendor"
+    check("a routed URL is not this machine", not providers.is_loopback(routed))
+    check("while the same host unrouted still is",
+          providers.is_loopback("http://127.0.0.1:8808/v1/messages"))
+    level, reason = providers.verified(
+        dict(GOOD, clearance="L2", endpoint=routed), {})
+    equal("so a hosted provider behind the proxy is demoted", level, "L1")
+    check("and the reason names the endpoint", "8808" in reason, reason)
+
+
 def test_a_name_that_merely_resolves_here_does_not_count():
     """A DNS answer is not a property of the address."""
     check("ollama.local is refused even though it may point at 127.0.0.1",
@@ -1421,6 +1439,36 @@ RAW = {"id": "local-llm", "name": "a local model", "shape": "raw-model",
        "adapter": "openai_compatible", "clearance": "L2", "model": "qwen3:8b"}
 
 
+class _Quiet(http.server.BaseHTTPRequestHandler):
+    """A handler that answers in JSON and keeps its opinions to itself.
+
+    Shared by the two stub servers below, because the duplication ratchet
+    refused the second copy of it — which was the right call: four lines of
+    send_header are exactly the kind of thing that drifts apart.
+    """
+
+    def read_body(self):
+        return self.rfile.read(int(self.headers.get("Content-Length") or 0))
+
+    def reply(self, payload, status=200):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def _listen(handler):
+    """Start one on a free port. Returns (url, stop)."""
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return "http://127.0.0.1:%d" % server.server_port, server.shutdown
+
+
 def _endpoint(reply="it works", status=200):
     """A real OpenAI-compatible server on a free port.
 
@@ -1429,26 +1477,15 @@ def _endpoint(reply="it works", status=200):
     """
     seen = []
 
-    class Handler(http.server.BaseHTTPRequestHandler):
+    class Handler(_Quiet):
         def do_POST(self):
-            length = int(self.headers.get("Content-Length") or 0)
             seen.append({"path": self.path,
-                         "body": json.loads(self.rfile.read(length) or b"{}"),
+                         "body": json.loads(self.read_body() or b"{}"),
                          "auth": self.headers.get("Authorization")})
-            payload = json.dumps(
-                {"choices": [{"message": {"content": reply}}]}).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self.reply({"choices": [{"message": {"content": reply}}]}, status)
 
-        def log_message(self, *args):
-            pass
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return "http://127.0.0.1:%d" % server.server_port, seen, server.shutdown
+    url, stop = _listen(Handler)
+    return url, seen, stop
 
 
 def test_a_real_endpoint_answers_through_the_adapter():
@@ -1893,6 +1930,151 @@ def test_an_expired_grant_is_offered_nothing():
           gateway.offer(QUEUE, stale, OFFER_CONFIG), [])
 
 
+# --- the process that holds the keys ---------------------------------------
+
+SECRET = "sk-a-key-the-adapter-must-never-hold"
+
+
+def _upstream():
+    """A server that reports back whichever credential header it was sent."""
+    seen = []
+
+    class Handler(_Quiet):
+        def do_POST(self):
+            seen.append({"path": self.path,
+                         "body": self.read_body().decode("utf-8"),
+                         "key": self.headers.get("x-api-key"),
+                         "version": self.headers.get("anthropic-version")})
+            self.reply({"content": [{"type": "text",
+                                     "text": "upstream answered"}]})
+
+    url, stop = _listen(Handler)
+    return url, seen, stop
+
+
+def _proxy(tmp, upstream, env=None):
+    write(tmp, "providers.json", json.dumps({"providers": [], "egress": {
+        "vendor": {"url": upstream, "key_env": "KULI_TEST_EGRESS_KEY",
+                   "header": "x-api-key",
+                   "extra": {"anthropic-version": "2023-06-01"}}}}))
+    server = egress.build(tmp, 0, env if env is not None
+                          else {"KULI_TEST_EGRESS_KEY": SECRET})
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return "http://127.0.0.1:%d" % server.server_port, server.shutdown
+
+
+def test_the_adapter_completes_a_call_it_holds_no_key_for(tmp):
+    """T15's done-when: the key is nowhere in the adapter's process."""
+    upstream, seen, stop_up = _upstream()
+    proxy, stop_proxy = _proxy(tmp, upstream)
+    try:
+        entry = {"id": "vendor", "name": "v", "shape": "raw-model",
+                 "adapter": "anthropic", "clearance": "L1",
+                 "model": "a-model", "endpoint": proxy + "/to/vendor"}
+        parcel = bundle.assemble([bundle.Part("docs/x.md", "L0", "be brief")],
+                                 entry)
+        equal("the call completes through the proxy",
+              adapters.complete(parcel, entry, "hi", env={}),
+              "upstream answered")
+
+        equal("the entry names no key variable at all",
+              adapters.api_key(entry, {"KULI_TEST_EGRESS_KEY": SECRET}), None)
+        sent = adapters.request_for([{"role": "user", "content": "hi"}], entry,
+                                    None, {})
+        check("so the adapter's own request carries no credential header",
+              not any("auth" in h.lower() or "api-key" in h.lower()
+                      for h in sent.headers))
+        check("and no key appears in what it sends",
+              SECRET not in sent.data.decode("utf-8"))
+
+        equal("while upstream was given the key by the proxy",
+              seen[0]["key"], SECRET)
+        equal("on the right path", seen[0]["path"], adapters.MESSAGES)
+        equal("with the vendor's extra header",
+              seen[0]["version"], "2023-06-01")
+        events = [e["event"] for e in trail.entries(tmp)]
+        equal("and the allowed call is in the trail", events, ["EgressAllowed"])
+        check("with no key in it", SECRET not in json.dumps(trail.entries(tmp)))
+    finally:
+        stop_proxy()
+        stop_up()
+
+
+def test_a_destination_not_on_the_list_is_refused(tmp):
+    upstream, seen, stop_up = _upstream()
+    proxy, stop_proxy = _proxy(tmp, upstream)
+    try:
+        entry = {"id": "vendor", "name": "v", "shape": "raw-model",
+                 "adapter": "anthropic", "clearance": "L1", "model": "m",
+                 "endpoint": proxy + "/to/somewhere-else"}
+        try:
+            adapters.complete(bundle.assemble([], entry), entry, "hi", env={})
+            check("an unlisted destination is refused", False)
+        except adapters.AdapterError as exc:
+            check("an unlisted destination is refused", "403" in str(exc))
+        equal("and nothing reached upstream", seen, [])
+    finally:
+        stop_proxy()
+        stop_up()
+
+    events = [e["event"] for e in trail.entries(tmp)]
+    check("the refusal is in the trail", "EgressRefused" in events, events)
+    check("and no key is anywhere in it",
+          SECRET not in json.dumps(trail.entries(tmp)))
+
+
+def test_the_proxy_refuses_to_start_without_its_keys(tmp):
+    upstream, _, stop_up = _upstream()
+    try:
+        _proxy(tmp, upstream, env={})
+        check("a destination with no key refuses to start", False)
+    except egress.EgressError as exc:
+        check("a destination with no key refuses to start", True)
+        check("and says so rather than failing one request at a time",
+              "outage" in str(exc), str(exc))
+    finally:
+        stop_up()
+
+    write(tmp, "providers.json", json.dumps({"providers": []}))
+    try:
+        egress.build(tmp, 0, {})
+        check("no egress table means nothing may leave", False)
+    except egress.EgressError:
+        check("no egress table means nothing may leave", True)
+
+
+def test_a_destination_is_a_name_and_not_a_url():
+    equal("the first segment after /to/ is the destination",
+          egress.split("/to/vendor/v1/messages"), ("vendor", "/v1/messages"))
+    equal("an unaddressed path names nothing",
+          egress.split("/v1/messages"), (None, "/v1/messages"))
+    equal("and a bare destination still has a path",
+          egress.split("/to/vendor"), ("vendor", "/"))
+
+
+def test_the_other_vendors_spelling_is_translated_once():
+    """T16: the loop must never learn there is more than one vendor."""
+    entry = {"id": "v", "adapter": "anthropic", "shape": "raw-model",
+             "model": "m"}
+    body = adapters.anthropic_body(
+        [{"role": "system", "content": "rules"},
+         {"role": "user", "content": "hi"}], entry, env={})
+    equal("the system prompt becomes a field", body["system"], "rules")
+    equal("and leaves the message list", [m["role"] for m in body["messages"]],
+          ["user"])
+    check("max_tokens is named rather than discovered from a 400",
+          body["max_tokens"] > 0)
+
+    message = adapters.anthropic_message({"content": [
+        {"type": "text", "text": "thinking"},
+        {"type": "tool_use", "id": "t1", "name": "read_file",
+         "input": {"path": "a.md"}}]})
+    equal("content blocks become one message", message["content"], "thinking")
+    equal("and a tool_use block becomes the call shape the loop knows",
+          adapters.tool_calls_in(message),
+          [{"id": "t1", "name": "read_file", "arguments": {"path": "a.md"}}])
+
+
 # --- the admission test ----------------------------------------------------
 
 CONFORM_CONFIG = {"classification": {"rules": [
@@ -2153,6 +2335,10 @@ NEEDS_TMP = [
     test_a_bad_line_is_skipped_not_fatal,
     test_a_second_endpoint_is_a_config_change,
     test_the_recorded_model_is_the_one_that_will_answer,
+    test_a_hosted_provider_behind_a_local_proxy_is_not_local,
+    test_the_adapter_completes_a_call_it_holds_no_key_for,
+    test_a_destination_not_on_the_list_is_refused,
+    test_the_proxy_refuses_to_start_without_its_keys,
     test_every_provider_is_stopped_by_the_same_gate,
     test_each_probe_reaches_the_gate_it_names,
     test_conformance_needs_something_to_compare,
@@ -2205,6 +2391,8 @@ NO_TMP = [
     test_tools_are_only_sent_when_there_are_some,
     test_the_cli_prints_what_it_was_given,
     test_a_gate_that_answers_differently_is_caught,
+    test_a_destination_is_a_name_and_not_a_url,
+    test_the_other_vendors_spelling_is_translated_once,
     test_the_providers_own_name_is_the_only_thing_allowed_to_differ,
     test_what_counts_as_this_machine,
     test_a_name_that_merely_resolves_here_does_not_count,

@@ -503,7 +503,7 @@ match would hide exactly the new case worth seeing.
 
 Only now, when nothing above has needed a key.
 
-### T15 — Egress proxy · M
+### T15 — Egress proxy · M · **done 27/11/2026**
 A separate process holding credentials, with an endpoint allowlist.
 
 - **Done when:** the adapter completes a cloud call **without the key being
@@ -515,7 +515,44 @@ A separate process holding credentials, with an endpoint allowlist.
   assumes the process, and should be renegotiated rather than quietly
   relaxed.
 
-### T16 — Admit one cloud provider · S
+`kuli/egress.py`, `kuli egress`. **`[OPEN-14]` is answered: the process, not
+the library.** A library would share an address space with the thing it is
+keeping secrets from, which is the one property that makes this worth a second
+process at all.
+
+An adapter is configured with `endpoint: http://127.0.0.1:8808/to/anthropic`
+and **no `api_key_env`**. Its environment never carries a key, its request
+body never carries one, and a dump of its memory never carries one. Three
+tests prove each of those against a real proxy and a real upstream on two
+sockets: upstream receives the credential, the adapter's own request carries
+no credential header at all, and the key appears nowhere in the trail.
+
+Four rules. **A destination is a name, not a URL** — the adapter asks for
+`/to/anthropic` and has no say in where that goes, because an adapter that
+could name the host could name one of its own choosing and the allowlist would
+be a suggestion. **Deny by default** — an unlisted name is 403 and recorded.
+**The key is read once, at startup** — a destination whose variable is unset
+makes the server refuse to start, because a proxy that is up and cannot
+authenticate looks like an outage somewhere else. **Both outcomes are
+recorded**, never the body.
+
+What it is not: a boundary against a determined adapter, since both run as the
+same user. It moves an accidental leak — a logged request, a crash dump, a
+context window — from certain to unlikely.
+
+#### The hole it opened on the day it was built
+
+An egress proxy runs on **this machine** and sends somewhere else. So a hosted
+provider configured as `http://127.0.0.1:8808/to/anthropic` passed T8's
+loopback check and was handed L2: the clearance test had been measuring where
+the *first hop* goes. `is_loopback` now refuses any URL whose path starts with
+the egress prefix, whatever its host, and a test pins both halves — the routed
+URL is not local, the same host unrouted still is.
+
+The constant lives in `providers.py` rather than `egress.py`, so the clearance
+check can recognise a routed URL without importing the module that imports it.
+
+### T16 — Admit one cloud provider · S · **admitted 27/11/2026, one call outstanding**
 A config row, then conformance.
 
 - **Done when:** the provider passes T12 and T13 unchanged, and appears in
@@ -523,6 +560,37 @@ A config row, then conformance.
   it is not admitted** — that would mean the gate was provider-specific, and
   the whole claim with it.
 - **Depends on:** T14, T15
+
+The `anthropic` adapter is a dialect table, not a branch: a path, a body
+shape, and a reply reader, chosen by the entry's `adapter` field. The system
+prompt becomes a field rather than a message, content blocks become one
+message, and a `tool_use` block becomes the same call shape the loop already
+knows — **translated once, so `runner.py` never learns there is more than one
+vendor.** A loop that knows which vendor it is talking to is a loop that will
+eventually behave differently for one of them.
+
+```
+$ kuli conform
+3 provider(s), all narrowed to {"level": "L1", "scope": ["docs", "kuli"], "tools": ["read_file"]}
+  …
+Every provider was stopped by the same gate, for the same reason, every time.
+```
+
+**No gate was changed to admit it**, which is the whole test. The row carries
+no `api_key_env`, routes through the proxy, and is L1 — demoted on its own by
+the rule above if anyone ever writes L2 there.
+
+**One call outstanding.** Nothing has yet been sent to the real API, because
+that spends the owner's money and the owner decides when. The adapter has been
+exercised end to end against a real proxy and a real upstream speaking the
+Anthropic response shape, so the wire contract is proven and the bill is not.
+Until a real call is made, this is *admitted* rather than *done*:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "…"      # held by the proxy, not by the adapter
+kuli egress
+kuli ask --provider anthropic-cloud --prompt "Say hello in exactly five words."
+```
 
 ---
 

@@ -45,7 +45,6 @@ import urllib.request
 from .bundle import Bundle
 from .providers import setting
 
-ADAPTER = "openai_compatible"
 SHAPE = "raw-model"
 COMPLETIONS = "/v1/chat/completions"
 DEFAULT_TIMEOUT = 60
@@ -94,13 +93,11 @@ def check(parcel, entry):
     if not isinstance(parcel, Bundle):
         raise AdapterError("an adapter takes a Bundle, not %s. Assemble it "
                            "first, so it is checked." % type(parcel).__name__)
-    if entry.get("adapter") != ADAPTER:
-        raise AdapterError("provider %r uses adapter %r, not %s"
-                           % (entry.get("id"), entry.get("adapter"), ADAPTER))
+    dialect(entry)
     if entry.get("shape") != SHAPE:
-        raise AdapterError("provider %r has shape %r; %s supplies the loop "
-                           "only for %s" % (entry.get("id"), entry.get("shape"),
-                                            ADAPTER, SHAPE))
+        raise AdapterError("provider %r has shape %r; this module supplies "
+                           "the loop only for %s"
+                           % (entry.get("id"), entry.get("shape"), SHAPE))
     if parcel.provider_id != entry.get("id"):
         raise AdapterError(
             "this bundle was assembled for %r and is being handed to %r. "
@@ -109,14 +106,30 @@ def check(parcel, entry):
     return True
 
 
-def request_for(messages, entry, tools=None, env=None):
-    """The HTTP request, with the key in the header and never in the body."""
+def dialect(entry):
+    """How this provider spells a conversation. An unknown one is refused."""
+    found = ADAPTERS.get(entry.get("adapter"))
+    if found is None:
+        raise AdapterError("provider %r uses adapter %r, which this build "
+                           "does not speak"
+                           % (entry.get("id"), entry.get("adapter")))
+    return found
+
+
+def openai_body(messages, entry, tools=None, env=None):
     payload = {"model": model_name(entry, env), "messages": messages,
                "stream": False}
     if tools:
         payload["tools"] = list(tools)
+    return payload
+
+
+def request_for(messages, entry, tools=None, env=None):
+    """The HTTP request, with the key in the header and never in the body."""
+    path, shape, _ = dialect(entry)
+    payload = (shape or openai_body)(messages, entry, tools, env)
     body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(base_url(entry, env) + COMPLETIONS,
+    request = urllib.request.Request(base_url(entry, env) + path,
                                      data=body, method="POST")
     request.add_header("Content-Type", "application/json")
     key = api_key(entry, env)
@@ -203,7 +216,69 @@ def converse(messages, entry, tools=None, env=None, timeout=DEFAULT_TIMEOUT,
     """
     request = request_for(messages, entry, tools, env)
     payload = _fetch(request, timeout, open_url or urllib.request.urlopen)
-    return message_from(payload)
+    return dialect(entry)[2](payload)
+
+
+#: T16. The Anthropic Messages API differs from the OpenAI shape in three
+#: places and nowhere else that matters here: the path, the system prompt
+#: being a field rather than a message, and the answer being a list of
+#: content blocks. `max_tokens` is required, so it is named rather than left
+#: to a default somebody would have to discover from a 400.
+MESSAGES = "/v1/messages"
+MAX_TOKENS = 2048
+
+
+def anthropic_body(messages, entry, tools=None, env=None):
+    """The same conversation, in the other vendor's spelling."""
+    system = [m["content"] for m in messages if m.get("role") == "system"]
+    body = {"model": model_name(entry, env),
+            "max_tokens": MAX_TOKENS,
+            "messages": [m for m in messages if m.get("role") != "system"]}
+    if system:
+        body["system"] = "\n\n".join(system)
+    if tools:
+        body["tools"] = [_anthropic_tool(t) for t in tools]
+    return body
+
+
+def _anthropic_tool(tool):
+    function = tool.get("function") or {}
+    return {"name": function.get("name"),
+            "description": function.get("description"),
+            "input_schema": function.get("parameters")}
+
+
+def anthropic_message(payload):
+    """An assistant message in the shape the rest of kuli already speaks.
+
+    Translated here rather than at every call site, so `runner.py` never
+    learns that there is more than one vendor. A loop that knows which vendor
+    it is talking to is a loop that will eventually behave differently for
+    one of them, which is the thing this project exists to prevent.
+    """
+    blocks = payload.get("content") or []
+    text = "".join(_block_text(b) for b in blocks)
+    calls = [_block_call(b) for b in blocks if b.get("type") == "tool_use"]
+    message = {"role": "assistant", "content": text or None}
+    if calls:
+        message["tool_calls"] = calls
+    return message
+
+
+def _block_text(block):
+    return (block.get("text") or "") if block.get("type") == "text" else ""
+
+
+def _block_call(block):
+    return {"id": block.get("id"), "type": "function",
+            "function": {"name": block.get("name"),
+                         "arguments": block.get("input")}}
+
+
+ADAPTERS = {
+    "openai_compatible": (COMPLETIONS, None, message_from),
+    "anthropic": (MESSAGES, anthropic_body, anthropic_message),
+}
 
 
 def complete(parcel, entry, prompt, env=None, timeout=DEFAULT_TIMEOUT,
@@ -212,4 +287,7 @@ def complete(parcel, entry, prompt, env=None, timeout=DEFAULT_TIMEOUT,
     check(parcel, entry)
     message = converse(messages_from(parcel, prompt), entry, None, env,
                        timeout, open_url)
-    return text_from({"choices": [{"message": message}]})
+    content = message.get("content")
+    if content is None:
+        raise AdapterError("the endpoint returned a message with no text")
+    return content

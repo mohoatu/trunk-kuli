@@ -41,6 +41,11 @@ UNVERIFIED_CEILING = "L1"
 #: Names that mean this machine without a DNS lookup.
 LOOPBACK_NAMES = ("localhost",)
 
+#: Where the egress proxy addresses a destination. Here rather than in
+#: `egress.py` so that `is_loopback` can refuse a routed URL without this
+#: module importing the one that imports it.
+EGRESS_PREFIX = "/to/"
+
 #: Lowest to highest. A provider may see its own level and below.
 CLEARANCES = ("L0", "L1", "L2", "L3")
 
@@ -54,7 +59,7 @@ UNKNOWN = {"id": "unknown", "name": "unknown", "shape": None,
 #: ignored: a misspelt `clearence` that is silently skipped is a permission
 #: nobody applied and everybody believed. A measure may abstain when it cannot
 #: judge; a permission may not.
-DOCUMENT_KEYS = ("_comment", "providers", "services")
+DOCUMENT_KEYS = ("_comment", "providers", "services", "egress")
 ENTRY_KEYS = ("id", "name", "shape", "adapter", "clearance", "detect",
               "model", "model_env", "endpoint", "endpoint_env", "api_key_env",
               "capabilities", "cost_per_mtok", "good_for", "not_for")
@@ -107,10 +112,13 @@ def setting(entry, direct, variable, env=None):
     return found or entry.get(direct)
 
 
-def host_of(url):
+def _parse(url):
     text = url or ""
-    parsed = urlsplit(text if "//" in text else "//" + text)
-    return (parsed.hostname or "").lower()
+    return urlsplit(text if "//" in text else "//" + text)
+
+
+def host_of(url):
+    return (_parse(url).hostname or "").lower()
 
 
 def is_loopback(url):
@@ -121,7 +129,16 @@ def is_loopback(url):
     name does not**, even one that resolves to 127.0.0.1 today: a DNS answer is
     not a property of the address, and a clearance that depends on a lookup is
     a clearance that changes without anybody editing anything.
+
+    **A URL routed through the egress proxy is never local**, whatever its
+    host. The proxy runs on this machine and the destination does not, so a
+    hosted provider configured as `http://127.0.0.1:8808/to/vendor` would
+    otherwise pass this check and be handed L2 — the loopback test would have
+    been measuring where the *first hop* goes. T15 created that hole on the
+    day it was built; this is the line that closes it.
     """
+    if _parse(url).path.startswith(EGRESS_PREFIX):
+        return False
     host = host_of(url)
     if not host:
         return False
