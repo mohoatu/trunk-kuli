@@ -109,11 +109,13 @@ def check(parcel, entry):
     return True
 
 
-def request_for(parcel, entry, prompt, env=None):
+def request_for(messages, entry, tools=None, env=None):
     """The HTTP request, with the key in the header and never in the body."""
-    body = json.dumps({"model": model_name(entry, env),
-                       "messages": messages_from(parcel, prompt),
-                       "stream": False}).encode("utf-8")
+    payload = {"model": model_name(entry, env), "messages": messages,
+               "stream": False}
+    if tools:
+        payload["tools"] = list(tools)
+    body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(base_url(entry, env) + COMPLETIONS,
                                      data=body, method="POST")
     request.add_header("Content-Type", "application/json")
@@ -121,6 +123,47 @@ def request_for(parcel, entry, prompt, env=None):
     if key:
         request.add_header("Authorization", "Bearer " + key)
     return request
+
+
+def tool_schema(name, description, properties, required=()):
+    """One entry for the `tools` array. The model is told, never asked."""
+    return {"type": "function",
+            "function": {"name": name, "description": description,
+                         "parameters": {"type": "object",
+                                        "properties": properties,
+                                        "required": list(required)}}}
+
+
+def _arguments(raw):
+    """A tool call's arguments, parsed. A model sends them as a string."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        raise AdapterError("the model sent tool arguments that are not JSON; "
+                           "they are not quoted here")
+
+
+def tool_calls_in(message):
+    """Every tool call in an assistant message, parsed, or none."""
+    found = []
+    for raw in message.get("tool_calls") or []:
+        function = raw.get("function") or {}
+        found.append({"id": raw.get("id"), "name": function.get("name"),
+                      "arguments": _arguments(function.get("arguments"))})
+    return found
+
+
+def message_from(payload):
+    """The assistant message, which may carry text, tool calls or both."""
+    choices = payload.get("choices") or []
+    if not choices:
+        raise AdapterError("the endpoint returned no choices")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise AdapterError("the endpoint returned a choice with no message")
+    return message
 
 
 def text_from(payload):
@@ -150,9 +193,23 @@ def _fetch(request, timeout, open_url):
                            "JSON")
 
 
+def converse(messages, entry, tools=None, env=None, timeout=DEFAULT_TIMEOUT,
+             open_url=None):
+    """One turn of a conversation. Returns the assistant message.
+
+    The caller owns the message list, because a loop has to append tool
+    results to it — but the caller is `runner.py`, which got its opening
+    messages from a bundle. Nothing here invents context.
+    """
+    request = request_for(messages, entry, tools, env)
+    payload = _fetch(request, timeout, open_url or urllib.request.urlopen)
+    return message_from(payload)
+
+
 def complete(parcel, entry, prompt, env=None, timeout=DEFAULT_TIMEOUT,
              open_url=None):
-    """One completion. The bundle is the only context that reaches the model."""
+    """One completion, text only. The bundle is the only context there is."""
     check(parcel, entry)
-    request = request_for(parcel, entry, prompt, env)
-    return text_from(_fetch(request, timeout, open_url or urllib.request.urlopen))
+    message = converse(messages_from(parcel, prompt), entry, None, env,
+                       timeout, open_url)
+    return text_from({"choices": [{"message": message}]})

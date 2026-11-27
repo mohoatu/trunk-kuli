@@ -384,9 +384,35 @@ OpenAI-compatible endpoint are the same code path with two rows in the file.
 The key goes in the `Authorization` header and never into the body, the trail
 or an error message.
 
+A raw model has no loop of its own, so kuli brings one. `kuli run` loads the
+context, calls, dispatches tools, records, and stops for a stated reason:
+
+```bash
+python -m kuli.cli run --provider local-llm --steps 4 \
+                       --prompt "what is in this repo"
+```
+
+```json
+{ "stopped": "answered", "tool_calls": 2,
+  "text": "…", "context": [], "level": null }
+```
+
+Two tools, both read-only, and nothing escapes the repository. Permission is
+checked **before** the handler runs, by the same function `offer` uses, and
+the result is checked **again** on the way back — because the path a model
+asked for says nothing about what the file turned out to contain. A refused
+call is handed back to the model as its tool result rather than raised: a loop
+that dies on a refusal turns every boundary into an outage.
+
+Every turn and every call is recorded by the loop, in the same payload shape a
+Claude Code hook sends, so `kuli trail`, `kuli audit` and `kuli report` read
+both kinds of run through one code path.
+
 Honest limit: this has been exercised against OpenAI-compatible endpoints over
-real HTTP, and **not yet against a real local model** — see
-[`docs/05-provider-tasks.md`](docs/05-provider-tasks.md) T7.
+real HTTP and against scripted replies, and **not yet against a real local
+model** — the wire contract and the gates are proven, *a real model deciding
+which tool to call* is not. See
+[`docs/05-provider-tasks.md`](docs/05-provider-tasks.md) T7 and T10.
 
 ### Exit codes
 

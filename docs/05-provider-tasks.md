@@ -210,13 +210,100 @@ back.
   result appears in the trail.
 - **Depends on:** T7, T6
 
-### T10 — The runner · M
+`adapters.tool_schema`, `adapters.converse` and `adapters.tool_calls_in`.
+Arguments arrive as a JSON *string*, so they are parsed defensively and a
+malformed set is refused without being quoted back — a model inventing broken
+JSON is a Tuesday, not an incident. A server that sends an object instead of a
+string also works, because some do.
+
+### T10 — The runner · M · **built 27/11/2026, with a real model still to try**
 kuli's own agent loop for raw models: load context, call, dispatch tools,
 record, stop.
 
 - **Done when:** a raw local model completes a small real task end to end,
   and its trail is indistinguishable in shape from a Claude Code run's.
 - **Depends on:** T9
+
+`kuli/runner.py` and `kuli/tools.py`. 442 checks, up from 396. A two-tool run
+over real HTTP, in this repository:
+
+```
+$ KULI_LOCAL_ENDPOINT=… kuli run --provider local-llm \
+      --prompt "what is in this repo" --steps 4
+{ "stopped": "answered", "tool_calls": 2,
+  "text": "I used 2 tool definitions and read the file" }
+
+$ kuli trail --last 7
+    local-llm                    3
+    list_files                   2
+    read_file                    2
+```
+
+Five decisions, each the reason a line is where it is.
+
+**The record is written by the loop, not the model**, and in the *same payload
+shape a Claude Code hook sends* — `hook_event_name`, `tool_name`,
+`tool_input`, `tool_response` — so `kuli trail`, `kuli audit` and
+`kuli report` read a local run and a wrapped run through one code path. That
+is the done-when, and the test compares key sets rather than taking anyone's
+word for it.
+
+**A refusal is handed back to the model as the tool result**, not raised. The
+loop has to continue and the model has to learn it may not have the thing; a
+loop that dies on a refused call turns every boundary into an outage. The text
+names the levels and never the content.
+
+**Permission is checked before the handler runs**, by `gateway.withheld` — the
+same function `offer` and `dispatch` use. Three callers, one answer. The
+*result* is then checked again by `toolguard`, because the path a model asked
+for says nothing about what the file turned out to contain. A test proves it:
+a file at an allowed L0 path containing an API key is refused on the way back,
+and the key never reaches the model.
+
+**The grant is never widened.** What is passed in is the ceiling for the whole
+run, and `grants.py` has no call that would produce a wider one. The loop also
+re-checks the bundle's provider stamp, so a bundle built for one entry cannot
+be run against another.
+
+**Two tools, both read-only**, and nothing escapes the repository: a path is
+resolved and refused unless it lands inside the root. `../../.ssh/id_rsa` is
+the first thing a model tries when it is being helpful about a missing file,
+and the classifier would not catch `../../../home/x/notes.md` — that is
+nothing the rules mention, so it reads as L2 and would be allowed. The
+boundary has to be the filesystem, not the glob.
+
+**The step budget is a stop reason, not a truncation.** Running out reports
+`out of steps` with the work done so far.
+
+#### What building this found
+
+**The trail was storing tool output as content.** `redact.clean` fingerprints
+a value whose key is in `CONTENT_FIELDS` and merely shortens anything else. A
+bare string arriving as the whole response landed in the second case, so up to
+400 characters of a file a tool had just read went into the trail verbatim.
+The runner made that systematic, since its tools return file text. Fixed by
+naming it as what it is — `{"output": …}` — so it is stored as a size and a
+digest. The module docstring has claimed "fingerprints, not contents" since
+T2; it is true now.
+
+**`actor_from` contradicted its own docstring.** It said the provider comes
+from the registry rather than the event, and the code read `event["provider"]`
+first. So a hook payload could name its own provider — and therefore have a
+clearance it liked written into the audit record. Provider, model and
+clearance now come from the registry only; kuli's own code may state them
+through a separate `stated` argument, because the loop knows which row it is
+driving and the refusal recorder knows which provider it just refused. Both of
+those are kuli calling itself, not an agent describing itself. A test now
+sends a payload claiming `provider: honest, clearance: L3` and asserts the
+record says `unknown`.
+
+That second one is the project's central claim failing inside the project: the
+record of what an agent did was partly written by the agent.
+
+**Still to do.** No local model has run this. The loop has been exercised
+against scripted replies and against a real HTTP endpoint speaking the tool
+protocol, so the wire contract and the gates are proven, and *a real model
+deciding which tool to call* is not. The commands are in T7.
 
 ---
 

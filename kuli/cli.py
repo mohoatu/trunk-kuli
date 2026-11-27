@@ -19,7 +19,8 @@ from pathlib import Path
 
 from . import (
     adapters, bundle, capability, classify, contract, duties, gateway, grants,
-    mcp, measures, providers, ratchet, review_cost, toolguard, trail,
+    mcp, measures, providers, ratchet, review_cost, runner, toolguard, tools,
+    trail,
 )
 
 #: Every refusal that means *this gate could not judge, so nothing passed*.
@@ -28,7 +29,8 @@ from . import (
 CANNOT_JUDGE = (providers.RegistryError, ratchet.ConfigError,
                 classify.ClassificationError, grants.GrantError,
                 capability.CapabilityError, gateway.GatewayError,
-                adapters.AdapterError, bundle.ClearanceError)
+                adapters.AdapterError, bundle.ClearanceError,
+                tools.ToolError)
 
 
 def _utf8():
@@ -485,8 +487,28 @@ def cmd_ask(args):
         print("No provider %r in the registry." % args.provider, file=sys.stderr)
         return 2
     config = ratchet.load_config(args.root)
-    parcel = bundle.assemble(_context_parts(args.context, config), entry)
+    grant = grants.for_provider(entry).narrow(**_narrowing(args))
+    parcel = bundle.assemble(_context_parts(args.context, config), grant)
     print(adapters.complete(parcel, entry, args.prompt, timeout=args.timeout))
+    return 0
+
+
+def cmd_run(args):
+    """kuli's own loop for a raw model: context in, tools dispatched, recorded."""
+    entry = _resolve_provider(args)
+    if entry is None:
+        print("No provider %r in the registry." % args.provider, file=sys.stderr)
+        return 2
+    config = ratchet.load_config(args.root)
+    grant = grants.for_provider(entry).narrow(**_narrowing(args))
+    task = {"prompt": args.prompt,
+            "context": dict((path, Path(path).read_text(encoding="utf-8"))
+                            for path in args.context or [])}
+    result = runner.run(task, entry, grant, args.root, config, args.steps,
+                        allowed=args.tools,
+                        talk=lambda m, e, s: adapters.converse(
+                            m, e, s, timeout=args.timeout))
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
@@ -526,6 +548,22 @@ AUTHORITY = {
 }
 
 
+def _add_model_commands(sub):
+    """`ask` is one turn; `run` is the loop. Both take a narrowed grant."""
+    for name, helptext, func in (
+            ("ask", "one completion through a raw-model provider", cmd_ask),
+            ("run", "kuli's own loop for a raw model", cmd_run)):
+        cmd = sub.add_parser(name, help=helptext)
+        for flag, options in NARROWING_FLAGS:
+            cmd.add_argument(flag, **options)
+        cmd.add_argument("--prompt", required=True)
+        cmd.add_argument("--context", nargs="*", help="paths for the bundle")
+        cmd.add_argument("--timeout", type=int, default=adapters.DEFAULT_TIMEOUT)
+        if name == "run":
+            cmd.add_argument("--steps", type=int, default=runner.DEFAULT_STEPS)
+        cmd.set_defaults(func=func)
+
+
 def _add_authority(sub):
     sub.add_parser("serve", help="expose the gates as MCP tools (read-only)"
                    ).set_defaults(func=cmd_serve)
@@ -543,12 +581,7 @@ def _add_authority(sub):
     made["capability"].add_argument("--verify", dest="token",
                                     help="read a token instead of issuing one")
 
-    ask = sub.add_parser("ask", help="one completion through a raw-model provider")
-    ask.add_argument("--provider", help="registry id; defaults to the active one")
-    ask.add_argument("--prompt", required=True)
-    ask.add_argument("--context", nargs="*", help="paths to put in the bundle")
-    ask.add_argument("--timeout", type=int, default=adapters.DEFAULT_TIMEOUT)
-    ask.set_defaults(func=cmd_ask)
+    _add_model_commands(sub)
 
 
 def build_parser():

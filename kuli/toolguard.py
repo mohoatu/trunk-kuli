@@ -130,6 +130,16 @@ def guard(event, provider, config=None, root="."):
     return True, level, reason
 
 
+def actor_of(provider):
+    """What kuli may state about a provider it is holding in its hand.
+
+    Not read from the payload. `trail.actor_from` explains why the two cases
+    are kept apart.
+    """
+    return {"provider": provider.get("id"), "model": provider.get("model"),
+            "clearance": provider.get("clearance")}
+
+
 def _result_text(event):
     found = event.get("tool_response") or event.get("result") or ""
     if isinstance(found, dict):
@@ -143,7 +153,6 @@ def _record_refusal(event, provider, message, root):
         "event": "ReturnPathRefused",
         "tool": event.get("tool_name") or event.get("tool") or "unknown",
         "session_id": event.get("session_id"),
-        "provider": provider.get("id"),
         "input": event.get("tool_input") or event.get("input") or {},
         "result": {"refused": message},
-    }, root)
+    }, root, stated=actor_of(provider))

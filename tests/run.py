@@ -25,8 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from kuli import (  # noqa: E402
-    adapters, bundle, capability, classify, contract, duties, gateway, grants, mcp,
-    measures, providers, ratchet, redact, review_cost, toolguard, trail,
+    adapters, bundle, capability, classify, contract, duties, gateway, grants,
+    mcp, measures, providers, ratchet, redact, review_cost, runner, toolguard,
+    tools, trail,
 )
 
 RESULTS = []
@@ -1505,11 +1506,257 @@ def test_the_endpoint_and_model_come_from_configuration():
                           (dict(RAW, endpoint="http://x:1", model=None),
                            "no model")):
         try:
-            adapters.request_for(bundle.Bundle(provider_id=RAW["id"]), broken,
-                                 "hi", {})
+            adapters.request_for([{"role": "user", "content": "hi"}], broken,
+                                 None, {})
             check("a provider with %s is refused" % label, False)
         except adapters.AdapterError:
             check("a provider with %s is refused" % label, True)
+
+
+# --- tool calling, and the loop around it ----------------------------------
+
+def _wants(name, arguments, identifier="call_1"):
+    """An assistant message asking for one tool, as a model sends it."""
+    return {"role": "assistant", "content": None, "tool_calls": [
+        {"id": identifier, "type": "function",
+         "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+
+
+def _says(text):
+    return {"role": "assistant", "content": text}
+
+
+def _script(*replies):
+    """A `talk` that returns each reply in turn, and records what it was sent."""
+    seen = []
+
+    def talk(messages, entry, schemas):
+        seen.append({"messages": list(messages), "schemas": schemas})
+        return replies[min(len(seen) - 1, len(replies) - 1)]
+
+    return talk, seen
+
+
+def _task(prompt="what is here", context=None):
+    return {"prompt": prompt, "context": context or {}}
+
+
+def _grant_for(allowed=("read_file", "list_files"), level="L1"):
+    return grants.Grant(principal="local-llm", level=level, tools=tuple(allowed))
+
+
+def test_a_tool_schema_is_what_the_model_expects():
+    schema = tools.schemas(["read_file"], adapters.tool_schema)[0]
+    equal("it is a function tool", schema["type"], "function")
+    equal("named for the tool", schema["function"]["name"], "read_file")
+    equal("with an object parameter block",
+          schema["function"]["parameters"]["type"], "object")
+    equal("and the path is required",
+          schema["function"]["parameters"]["required"], ["path"])
+    equal("an unknown name is not invented",
+          tools.schemas(["nonsense"], adapters.tool_schema), [])
+
+
+def test_tool_calls_are_parsed_or_refused():
+    parsed = adapters.tool_calls_in(_wants("read_file", {"path": "a.md"}))
+    equal("one call, with its arguments as a mapping",
+          parsed, [{"id": "call_1", "name": "read_file",
+                    "arguments": {"path": "a.md"}}])
+    already = {"tool_calls": [{"id": "x", "function": {
+        "name": "read_file", "arguments": {"path": "b.md"}}}]}
+    equal("a server that sends an object rather than a string also works",
+          adapters.tool_calls_in(already)[0]["arguments"], {"path": "b.md"})
+    equal("a message with no calls asks for nothing",
+          adapters.tool_calls_in(_says("hello")), [])
+    broken = {"tool_calls": [{"id": "x", "function": {
+        "name": "read_file", "arguments": "{not json at all"}}]}
+    try:
+        adapters.tool_calls_in(broken)
+        check("arguments that are not JSON are refused", False)
+    except adapters.AdapterError as exc:
+        check("arguments that are not JSON are refused", True)
+        check("and are not quoted back",
+              "not json at all" not in str(exc), str(exc))
+
+
+def test_tools_are_only_sent_when_there_are_some():
+    url, seen, stop = _endpoint("fine")
+    try:
+        entry = dict(RAW, endpoint=url)
+        adapters.converse([{"role": "user", "content": "hi"}], entry, None,
+                          env={})
+        check("a text-only turn sends no tools array", "tools" not in seen[0]["body"])
+        adapters.converse([{"role": "user", "content": "hi"}], entry,
+                          tools.schemas(None, adapters.tool_schema), env={})
+        equal("and a tool turn sends both of them",
+              len(seen[1]["body"]["tools"]), 2)
+    finally:
+        stop()
+
+
+def test_a_two_tool_task_runs_to_an_answer(tmp):
+    write(tmp, "notes.md", "the answer is 41\n")
+    write(tmp, "kuli.json", json.dumps(OFFER_CONFIG))
+    talk, seen = _script(_wants("list_files", {"prefix": ""}, "a"),
+                         _wants("read_file", {"path": "notes.md"}, "b"),
+                         _says("the answer is 41"))
+
+    result = runner.run(_task(), dict(RAW, id="local-llm"),
+                        _grant_for(level="L2"), tmp, OFFER_CONFIG, talk=talk)
+    equal("the loop stops because the model answered",
+          result["stopped"], runner.ANSWERED)
+    equal("after two tool calls", result["tool_calls"], 2)
+    equal("and returns the model's text", result["text"], "the answer is 41")
+
+    answers = [m for m in seen[-1]["messages"] if m.get("role") == "tool"]
+    equal("both results went back to the model", len(answers), 2)
+    check("the listing named the file", "notes.md" in answers[0]["content"])
+    check("and the file's text was handed over",
+          "the answer is 41" in answers[1]["content"])
+
+
+def test_every_call_and_result_is_in_the_trail(tmp):
+    write(tmp, "notes.md", "x\n")
+    talk, _ = _script(_wants("read_file", {"path": "notes.md"}),
+                      _says("done"))
+    runner.run(_task(), dict(RAW, id="local-llm"), _grant_for(level="L2"),
+               tmp, OFFER_CONFIG, talk=talk)
+
+    records = trail.entries(tmp)
+    events = [e["event"] for e in records]
+    equal("the turn, the call and its result are all recorded",
+          events, ["ModelReply", "PreToolUse", "PostToolUse", "ModelReply"])
+    ok, problems = trail.verify(tmp)
+    check("and the chain still verifies", ok, problems)
+    equal("the loop names the provider it drove, not 'unknown'",
+          records[1]["actor"]["provider"], "local-llm")
+    check("the result is stored as a fingerprint, not content",
+          "sha256" in json.dumps(records[2]["result"]))
+    check("and the file's text is nowhere in the trail",
+          "x\n" not in json.dumps(records[2]["result"]))
+
+
+def test_a_payload_may_not_name_its_own_provider(tmp):
+    """The event is written by the agent. The registry is not."""
+    registry(tmp, dict(GOOD, id="honest", clearance="L2"))
+    before = with_env(KULI_PROVIDER=None, CLAUDECODE=None, KULI_LOCAL=None)
+    try:
+        entry = trail.append({"hook_event_name": "PreToolUse",
+                              "tool_name": "Read", "provider": "honest",
+                              "model": "something", "clearance": "L3"}, tmp)
+    finally:
+        restore_env(before)
+    equal("a claimed provider is ignored", entry["actor"]["provider"], "unknown")
+    equal("so is a claimed model", entry["actor"]["model"], "unknown")
+    check("and a claimed clearance cannot be recorded",
+          entry["actor"]["clearance"] != "L3", entry["actor"])
+
+
+def test_the_trail_shape_matches_a_wrapped_products(tmp):
+    """T10's done-when: one code path reads both kinds of run."""
+    write(tmp, "notes.md", "x\n")
+    hooked = trail.append({"hook_event_name": "PreToolUse", "tool_name": "Read",
+                           "tool_input": {"file_path": "notes.md"}}, tmp)
+    talk, _ = _script(_wants("read_file", {"path": "notes.md"}), _says("done"))
+    runner.run(_task(), dict(RAW, id="local-llm"), _grant_for(level="L2"),
+               tmp, OFFER_CONFIG, talk=talk)
+    ours = [e for e in trail.entries(tmp) if e["event"] == "PreToolUse"][-1]
+    equal("the same keys, in the same shape",
+          sorted(ours), sorted(hooked))
+    equal("including the actor block",
+          sorted(ours["actor"]), sorted(hooked["actor"]))
+
+
+def test_a_refused_tool_is_handed_back_and_the_loop_goes_on(tmp):
+    write(tmp, "notes.md", "x\n")
+    talk, seen = _script(_wants("read_file", {"path": "business/secret.md"}),
+                         _says("I was not allowed"))
+    result = runner.run(_task(), dict(RAW, id="local-llm"), _grant_for(),
+                        tmp, OFFER_CONFIG, talk=talk)
+    equal("the loop still reached an answer", result["stopped"], runner.ANSWERED)
+    answer = [m for m in seen[-1]["messages"] if m.get("role") == "tool"][0]
+    check("the model is told it was refused",
+          answer["content"].startswith("REFUSED:"), answer["content"])
+    check("and why", "L2" in answer["content"], answer["content"])
+    refusals = [e for e in trail.entries(tmp)
+                if "refused" in json.dumps(e.get("result") or {})]
+    equal("the refusal is in the trail", len(refusals), 1)
+
+
+def test_a_tool_the_grant_does_not_name_is_refused(tmp):
+    talk, seen = _script(_wants("list_files", {"prefix": ""}), _says("fine"))
+    runner.run(_task(), dict(RAW, id="local-llm"),
+               _grant_for(allowed=("read_file",), level="L2"), tmp,
+               OFFER_CONFIG, talk=talk)
+    answer = [m for m in seen[-1]["messages"] if m.get("role") == "tool"][0]
+    check("a tool outside the grant is refused by name",
+          "list_files is not a tool" in answer["content"], answer["content"])
+
+
+def test_a_secret_in_the_content_is_caught_even_on_an_allowed_path(tmp):
+    """The path said L0. What was in the file did not."""
+    write(tmp, "docs/notes.md", "api_key: sk-abcdefghijklmnopqrstuvwxyz\n")
+    talk, seen = _script(_wants("read_file", {"path": "docs/notes.md"}),
+                         _says("nothing to see"))
+    runner.run(_task(), dict(RAW, id="local-llm"), _grant_for(level="L2"),
+               tmp, {"classification": {"rules": [
+                   {"match": "docs/**", "level": "L0"}]}}, talk=talk)
+    answer = [m for m in seen[-1]["messages"] if m.get("role") == "tool"][0]
+    check("the return path refuses it", answer["content"].startswith("REFUSED:"))
+    check("and the secret never reached the model",
+          "sk-abcdefghijklmnopqrstuvwxyz" not in json.dumps(seen[-1]["messages"]))
+
+
+def test_running_out_of_steps_is_a_stated_stop(tmp):
+    write(tmp, "notes.md", "x\n")
+    talk, _ = _script(_wants("read_file", {"path": "notes.md"}))
+    result = runner.run(_task(), dict(RAW, id="local-llm"),
+                        _grant_for(level="L2"), tmp, OFFER_CONFIG, steps=3,
+                        talk=talk)
+    equal("the loop says why it stopped", result["stopped"], runner.OUT_OF_STEPS)
+    equal("after exactly the budget", result["tool_calls"], 3)
+
+
+def test_nothing_escapes_the_repository(tmp):
+    write(tmp, "notes.md", "x\n")
+    for path in ("../outside.md", "/etc/passwd", "a/../../b.md"):
+        try:
+            tools.inside(tmp, path)
+            check("%s is refused" % path, False)
+        except tools.ToolError:
+            check("%s is refused" % path, True)
+    equal("while a path inside resolves",
+          tools.inside(tmp, "notes.md").name, "notes.md")
+    for bad, label in (({"path": "nope.md"}, "a missing file"),
+                       ({"prefix": "notes.md"}, "a file asked for as a list")):
+        try:
+            tools.run("read_file" if "path" in bad else "list_files", bad, tmp)
+            check("%s is refused" % label, False)
+        except tools.ToolError:
+            check("%s is refused" % label, True)
+    try:
+        tools.run("rm", {}, tmp)
+        check("an unknown tool is refused rather than guessed at", False)
+    except tools.ToolError:
+        check("an unknown tool is refused rather than guessed at", True)
+
+
+def test_a_listing_is_capped(tmp):
+    for index in range(tools.MAX_ENTRIES + 20):
+        write(tmp, "many/%03d.md" % index, "x")
+    listing = tools.run("list_files", {"prefix": "many"}, tmp)
+    equal("a listing cannot be used to page out the repository",
+          len(listing.splitlines()), tools.MAX_ENTRIES)
+
+
+def test_the_loop_refuses_a_bundle_built_for_someone_else(tmp):
+    talk, _ = _script(_says("hi"))
+    try:
+        runner.run(_task(), dict(RAW, id="someone-else"), _grant_for(),
+                   tmp, OFFER_CONFIG, talk=talk)
+        check("the loop checks the bundle's stamp too", False)
+    except adapters.AdapterError:
+        check("the loop checks the bundle's stamp too", True)
 
 
 # --- filter the offer, not only the call -----------------------------------
@@ -1749,6 +1996,17 @@ NEEDS_TMP = [
     test_a_bad_line_is_skipped_not_fatal,
     test_a_second_endpoint_is_a_config_change,
     test_the_registry_and_the_trail_carry_the_earned_clearance,
+    test_a_two_tool_task_runs_to_an_answer,
+    test_every_call_and_result_is_in_the_trail,
+    test_a_payload_may_not_name_its_own_provider,
+    test_the_trail_shape_matches_a_wrapped_products,
+    test_a_refused_tool_is_handed_back_and_the_loop_goes_on,
+    test_a_tool_the_grant_does_not_name_is_refused,
+    test_a_secret_in_the_content_is_caught_even_on_an_allowed_path,
+    test_running_out_of_steps_is_a_stated_stop,
+    test_nothing_escapes_the_repository,
+    test_a_listing_is_capped,
+    test_the_loop_refuses_a_bundle_built_for_someone_else,
 ]
 NO_TMP = [
     test_review_cost_abstains_without_identifiers, test_identifier_pattern,
@@ -1780,6 +2038,9 @@ NO_TMP = [
     test_every_withholding_says_why,
     test_a_task_is_judged_on_what_it_declares,
     test_an_expired_grant_is_offered_nothing,
+    test_a_tool_schema_is_what_the_model_expects,
+    test_tool_calls_are_parsed_or_refused,
+    test_tools_are_only_sent_when_there_are_some,
     test_what_counts_as_this_machine,
     test_a_name_that_merely_resolves_here_does_not_count,
     test_a_loopback_endpoint_earns_its_clearance,

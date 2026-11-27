@@ -1,3 +1,9 @@
+# Whether a project commits its trail is that project's decision — it holds
+# fingerprints, not content, so it is safe to review in a diff. In kuli's own
+# repository the trail is the output of exercising kuli rather than evidence
+# about a project, so it is not kept.
+.kuli/trail/
+
 __pycache__/
 *.py[cod]
 .venv/

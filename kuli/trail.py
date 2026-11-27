@@ -76,25 +76,46 @@ def first(event, keys, env=None, default="unknown"):
     return default
 
 
-def actor_from(event, root="."):
+def running_provider(root="."):
+    try:
+        return providers.active(root)
+    except (providers.RegistryError, ValueError):
+        return dict(providers.UNKNOWN)
+
+
+#: The fields only kuli's own code may state. See `actor_from`.
+STATED = ("provider", "model", "clearance")
+
+
+def actor_from(event, root=".", stated=None):
     """Who did it, as far as the boundary can tell.
 
-    The provider comes from the registry rather than from the event, because
-    the event is written by the agent and the registry is not. With no
-    registry the answer is `unknown`, which is recorded honestly rather than
+    The provider, model and clearance come from the registry, **not from the
+    event** — the event is written by the agent and the registry is not. An
+    earlier version read `event["provider"]` first, which contradicted this
+    docstring and let a payload name a provider, and therefore a clearance,
+    of its own choosing.
+
+    `stated` is the exception, and it is narrow: kuli's own loop (`runner.py`)
+    knows which registry entry it is driving, and the refusal recorder knows
+    which provider it just refused. Both are kuli calling itself, not an agent
+    describing itself. Nothing arriving from a hook payload can set these.
+
+    With no registry the answer is `unknown`, recorded honestly rather than
     guessed from whatever is in the environment.
     """
-    try:
-        running = providers.active(root)
-    except (providers.RegistryError, ValueError):
-        running = dict(providers.UNKNOWN)
-    return {
-        "provider": first(event, ("provider",), default=running["id"]),
-        "model": first(event, ("model",), default=running.get("model")) or "unknown",
-        "clearance": running.get("clearance"),
+    found = running_provider(root)
+    actor = {
+        "provider": found["id"],
+        "model": found.get("model") or "unknown",
+        "clearance": found.get("clearance"),
         "session": first(event, ("session_id", "session")),
         "run": first(event, ("run",), "KULI_RUN"),
     }
+    for field in STATED:
+        if stated and stated.get(field):
+            actor[field] = stated[field]
+    return actor
 
 
 #: Where a tool names the thing it is acting on.
@@ -113,27 +134,46 @@ def target_from(event):
     return redact.shorten(str(name)) if name else None
 
 
-def build(event, root="."):
+def build(event, root=".", stated=None):
     """Turn a raw hook payload into the entry that will be appended."""
     body = {
         "ts": now(),
         "event": first(event, ("hook_event_name", "event")),
         "tool": first(event, ("tool_name", "tool")),
-        "actor": actor_from(event, root),
+        "actor": actor_from(event, root, stated),
         "target": target_from(event),
         "cwd": redact.shorten(str(first(event, ("cwd",), default=root))),
         "detail": redact.clean(payload_of(event)),
     }
     response = first(event, ("tool_response", "result"), default=None)
     if response is not None:
-        body["result"] = redact.clean(response)
+        body["result"] = redact.clean(_as_content(response))
     return body
 
 
-def append(event, root="."):
-    """Record one action. Returns the written entry."""
+def _as_content(response):
+    """A bare tool result is **content**, so name it as one.
+
+    `redact.clean` fingerprints a value whose key is in `CONTENT_FIELDS` and
+    merely shortens anything else. A plain string arriving as the whole
+    response used to land in the second case, so up to `MAX_STRING` characters
+    of a file a tool had just read were written into the trail verbatim. The
+    runner (T10) made that systematic: its tools return file text.
+
+    Wrapping it under `output` puts it where it belonged — stored as a size
+    and a digest, never as the bytes.
+    """
+    return response if isinstance(response, dict) else {"output": response}
+
+
+def append(event, root=".", stated=None):
+    """Record one action. Returns the written entry.
+
+    `stated` is only for kuli's own code naming the provider it is driving;
+    see `actor_from`.
+    """
     previous = read_head(root)
-    body = build(event, root)
+    body = build(event, root, stated)
     body["prev"] = previous
     body["hash"] = digest(body, previous)
 
