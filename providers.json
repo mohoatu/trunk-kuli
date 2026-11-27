@@ -31,7 +31,7 @@
       "clearance": "L2",
       "endpoint": "http://127.0.0.1:11434",
       "endpoint_env": "KULI_LOCAL_ENDPOINT",
-      "model": "qwen3:8b",
+      "model": "qwen3:4b",
       "model_env": "KULI_LOCAL_MODEL",
       "capabilities": {
         "tool_calling": false,
